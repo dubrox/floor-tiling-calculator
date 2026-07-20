@@ -193,6 +193,7 @@ export function LayerPlacementFields({ layer, tile, onChange, onCommit }) {
             </div>
           `
         : null}
+      <p class="hint">Offset is relative to the layer’s top-left corner.</p>
       <div class="field-row">
         <div class="field">
           <label>Offset X</label>

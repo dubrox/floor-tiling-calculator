@@ -388,6 +388,16 @@ body {
   grid-column: auto;
 }
 
+.layer-actions {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.layer-actions .btn {
+  flex: 1 1 auto;
+}
+
 .image-row .tile-thumb {
   width: 48px;
   height: 48px;

@@ -594,6 +594,33 @@ export function App() {
     selectBase();
   }
 
+  function cloneSelected() {
+    if (!selectedArea || is3d) return;
+    const layer = liveAreaLayer || selectedArea.layer;
+    const points = liveAreas?.[selectedArea.id] || selectedArea.points;
+    const index = config.areas.findIndex((a) => a.id === selectedArea.id);
+    const baseName = (selectedArea.name || '').trim() || getAreaLayerName(selectedArea, index);
+    const clone = {
+      id: crypto.randomUUID(),
+      kind: selectedArea.kind,
+      name: `${baseName} copy`,
+      points: points.map(([x, y]) => [x, y]),
+      layer: {
+        tileId: layer.tileId,
+        offsetXCm: layer.offsetXCm,
+        offsetYCm: layer.offsetYCm,
+        orientationDeg: layer.orientationDeg,
+      },
+    };
+    const areas = [...config.areas];
+    areas.splice(index + 1, 0, clone);
+    commit({ ...config, areas });
+    setSelectedId(clone.id);
+    setTool('select');
+    setLiveAreaLayer(null);
+    setLiveAreas(null);
+  }
+
   function startLayerDrag(e, areaId) {
     if (is3d) return;
     layerDragRef.current = areaId;
@@ -1315,7 +1342,10 @@ export function App() {
                         });
                       }}
                     />
-                    <button type="button" class="btn danger" onClick=${deleteSelected}>Delete area</button>
+                    <div class="row layer-actions">
+                      <button type="button" class="btn" onClick=${cloneSelected}>Clone layer</button>
+                      <button type="button" class="btn danger" onClick=${deleteSelected}>Delete area</button>
+                    </div>
                   </div>
                 `
               : null}

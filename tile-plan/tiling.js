@@ -58,10 +58,26 @@ function rotatePoint(x, y, cx, cy, cos, sin) {
 }
 
 /**
- * Generate tile rectangles covering `coverBounds` after rotation around floor centroid + offset.
- * Iteration happens in unrotated tile space so we only create tiles that can intersect the floor.
+ * Local origin for a tiling layer: top-left of its geometry (or floor bounds for the base).
+ * Offset and orientation are applied relative to this point.
  */
-export function generateTileRects(tiling, coverBounds, floorPlan) {
+export function tilingOriginFromBounds(bounds) {
+  return [bounds.minX, bounds.minY];
+}
+
+export function tilingOriginFromPoints(points, floorPlan) {
+  if (!points || points.length < 1) {
+    return tilingOriginFromBounds(floorPlan.bounds);
+  }
+  return tilingOriginFromBounds(polygonBounds(points));
+}
+
+/**
+ * Generate tile rectangles covering `coverBounds`.
+ * Offset is relative to `origin` (layer top-left); rotation is around that same origin.
+ * Iteration happens in unrotated tile space so we only create tiles that can intersect the cover.
+ */
+export function generateTileRects(tiling, coverBounds, floorPlan, origin = null) {
   const bounds = coverBounds || floorPlan.bounds;
   const w = Math.max(0.01, Number(tiling.widthCm) || 0.01);
   const h = Math.max(0.01, Number(tiling.lengthCm) || 0.01);
@@ -74,7 +90,7 @@ export function generateTileRects(tiling, coverBounds, floorPlan) {
   const sin = Math.sin(rad);
   const invCos = Math.cos(-rad);
   const invSin = Math.sin(-rad);
-  const [cx, cy] = floorPlan.centroid;
+  const [cx, cy] = origin || tilingOriginFromBounds(floorPlan.bounds);
 
   const corners = [
     [bounds.minX, bounds.minY],
@@ -88,16 +104,17 @@ export function generateTileRects(tiling, coverBounds, floorPlan) {
   const stepX = w + gap;
   const stepY = h + gap;
 
-  const i0 = Math.floor((local.minX - margin - ox) / stepX);
-  const i1 = Math.ceil((local.maxX + margin - ox) / stepX);
-  const j0 = Math.floor((local.minY - margin - oy) / stepY);
-  const j1 = Math.ceil((local.maxY + margin - oy) / stepY);
+  // Local tile-space coordinates are relative to the layer origin.
+  const i0 = Math.floor((local.minX - cx - margin - ox) / stepX);
+  const i1 = Math.ceil((local.maxX - cx + margin - ox) / stepX);
+  const j0 = Math.floor((local.minY - cy - margin - oy) / stepY);
+  const j1 = Math.ceil((local.maxY - cy + margin - oy) / stepY);
 
   const rects = [];
   for (let j = j0; j <= j1; j++) {
     for (let i = i0; i <= i1; i++) {
-      const x = i * stepX + ox;
-      const y = j * stepY + oy;
+      const x = cx + i * stepX + ox;
+      const y = cy + j * stepY + oy;
       const world = [
         [x, y],
         [x + w, y],
@@ -244,7 +261,8 @@ export function computeTilingPreview(baseTiling, areas, floorPlan) {
   }
   if (baseRegion && !baseRegion.length) baseRegion = null;
 
-  const baseRects = generateTileRects(baseTiling, floorPlan.bounds, floorPlan);
+  const baseOrigin = tilingOriginFromBounds(floorPlan.bounds);
+  const baseRects = generateTileRects(baseTiling, floorPlan.bounds, floorPlan, baseOrigin);
   const baseResult = clipRectsToRegion(baseRects, baseRegion, baseTiling);
   const baseCount = baseResult.tileCount;
 
@@ -260,7 +278,8 @@ export function computeTilingPreview(baseTiling, areas, floorPlan) {
       };
     }
     const cover = multipolygonBounds(visible, floorPlan.bounds);
-    const rects = generateTileRects(tiling, cover, floorPlan);
+    const origin = tilingOriginFromPoints(area.points, floorPlan);
+    const rects = generateTileRects(tiling, cover, floorPlan, origin);
     const result = clipRectsToRegion(rects, visible, tiling);
     return {
       id: area.id,

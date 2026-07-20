@@ -31,21 +31,26 @@ function aabbsOverlap(a, b) {
   return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
 }
 
-export function getUnderlyingTiling(areas, areaId, baseTiling) {
+function getUnderlyingLayer(areas, areaId) {
   const idx = areas.findIndex((a) => a.id === areaId);
-  if (idx < 0) return baseTiling;
+  if (idx < 0) return null;
   const current = aabbFromPoints(areas[idx].points);
   for (let i = idx - 1; i >= 0; i--) {
     if (aabbsOverlap(current, aabbFromPoints(areas[i].points))) {
-      return areas[i].tiling;
+      return areas[i];
     }
   }
-  return baseTiling;
+  return null;
 }
 
-function addTilingGridLines(xs, ys, tiling, floorPlan) {
+export function getUnderlyingTiling(areas, areaId, baseTiling) {
+  return getUnderlyingLayer(areas, areaId)?.tiling || baseTiling;
+}
+
+function addTilingGridLines(xs, ys, tiling, floorPlan, origin = null) {
   if (!tiling) return;
-  const { bounds, centroid } = floorPlan;
+  const { bounds } = floorPlan;
+  const [ox0, oy0] = origin || [bounds.minX, bounds.minY];
   const w = Math.max(0.01, Number(tiling.widthCm) || 0.01);
   const h = Math.max(0.01, Number(tiling.lengthCm) || 0.01);
   const gap = Math.max(0, Number(tiling.spacingCm) || 0);
@@ -54,18 +59,19 @@ function addTilingGridLines(xs, ys, tiling, floorPlan) {
   const deg = ((Number(tiling.orientationDeg) || 0) % 180 + 180) % 180;
   const stepX = w + gap;
   const stepY = h + gap;
+  const gridOx = ox0 + ox;
+  const gridOy = oy0 + oy;
 
   const near0 = deg < 8 || deg > 172;
   const near90 = Math.abs(deg - 90) < 8;
   if (!near0 && !near90) {
-    const [cx, cy] = centroid;
     const pad = Math.hypot(bounds.width, bounds.height);
     for (const step of [stepX, stepY]) {
       const i0 = Math.floor((-pad - ox) / step) - 1;
       const i1 = Math.ceil((pad - ox) / step) + 1;
       for (let i = i0; i <= i1; i++) {
-        xs.add(cx + i * step + ox);
-        ys.add(cy + i * step + oy);
+        xs.add(ox0 + i * step + ox);
+        ys.add(oy0 + i * step + oy);
       }
     }
     return;
@@ -73,13 +79,13 @@ function addTilingGridLines(xs, ys, tiling, floorPlan) {
 
   const horizStep = near90 ? stepY : stepX;
   const vertStep = near90 ? stepX : stepY;
-  const i0 = Math.floor((bounds.minX - horizStep * 2 - ox) / horizStep);
-  const i1 = Math.ceil((bounds.maxX + horizStep * 2 - ox) / horizStep);
-  const j0 = Math.floor((bounds.minY - vertStep * 2 - oy) / vertStep);
-  const j1 = Math.ceil((bounds.maxY + vertStep * 2 - oy) / vertStep);
+  const i0 = Math.floor((bounds.minX - horizStep * 2 - gridOx) / horizStep);
+  const i1 = Math.ceil((bounds.maxX + horizStep * 2 - gridOx) / horizStep);
+  const j0 = Math.floor((bounds.minY - vertStep * 2 - gridOy) / vertStep);
+  const j1 = Math.ceil((bounds.maxY + vertStep * 2 - gridOy) / vertStep);
 
-  for (let i = i0; i <= i1; i++) xs.add(i * horizStep + ox);
-  for (let j = j0; j <= j1; j++) ys.add(j * vertStep + oy);
+  for (let i = i0; i <= i1; i++) xs.add(i * horizStep + gridOx);
+  for (let j = j0; j <= j1; j++) ys.add(j * vertStep + gridOy);
 }
 
 function sortedLines(set) {
@@ -110,9 +116,13 @@ export function collectSnapTargets(areas, excludeId, baseTiling, activeTiling, f
     addY(geometryY, y);
   }
 
+  let activeOrigin = [floorPlan.bounds.minX, floorPlan.bounds.minY];
   for (const area of areas) {
-    if (area.id === excludeId) continue;
     const b = aabbFromPoints(area.points);
+    if (area.id === excludeId) {
+      activeOrigin = [b.minX, b.minY];
+      continue;
+    }
     addX(geometryX, b.minX);
     addX(geometryX, b.maxX);
     addY(geometryY, b.minY);
@@ -123,9 +133,17 @@ export function collectSnapTargets(areas, excludeId, baseTiling, activeTiling, f
     }
   }
 
-  const underlyingTiling = getUnderlyingTiling(areas, excludeId, baseTiling);
-  addTilingGridLines(underlyingX, underlyingY, underlyingTiling, floorPlan);
-  addTilingGridLines(innerX, innerY, activeTiling, floorPlan);
+  const underlying = getUnderlyingLayer(areas, excludeId);
+  const underlyingTiling = underlying?.tiling || baseTiling;
+  const underlyingOrigin = underlying
+    ? (() => {
+        const b = aabbFromPoints(underlying.points);
+        return [b.minX, b.minY];
+      })()
+    : [floorPlan.bounds.minX, floorPlan.bounds.minY];
+
+  addTilingGridLines(underlyingX, underlyingY, underlyingTiling, floorPlan, underlyingOrigin);
+  addTilingGridLines(innerX, innerY, activeTiling, floorPlan, activeOrigin);
 
   return {
     groups: [
