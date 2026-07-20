@@ -28,19 +28,23 @@ import {
   translatePoints,
 } from './snap.js';
 import {
+  CAMERA_STORAGE_KEY,
   createDefaultCamera,
+  createDefaultConfig,
   downloadConfig,
   loadCamera,
   loadConfig,
+  loadInitJson,
   normalizeCamera,
   parseImportedFile,
   saveCamera,
   saveConfig,
+  STORAGE_KEY,
 } from './storage.js';
 import {
   LayerPlacementFields,
   TileLibraryPanel,
-  TilePickerModal,
+  TilePickerPanel,
   TileSwatch,
 } from './libraryUi.js';
 import {
@@ -151,7 +155,12 @@ function reorderAreas(areas, dragId, targetId, insertAfter) {
 }
 
 export function App() {
-  const [history, setHistory] = useState(() => createHistory(loadConfig()));
+  const noSavedConfig = useRef(false);
+  const [history, setHistory] = useState(() => {
+    const saved = loadConfig();
+    noSavedConfig.current = saved === null;
+    return createHistory(saved ?? createDefaultConfig());
+  });
   const config = history.present;
   const [tool, setTool] = useState('select');
   /** null | 'base' | area uuid */
@@ -216,6 +225,16 @@ export function App() {
     () => displayConfig.areas.find((a) => a.id === selectedAreaId) || null,
     [displayConfig.areas, selectedAreaId],
   );
+
+  useEffect(() => {
+    if (noSavedConfig.current) {
+      loadInitJson().then((initConfig) => {
+        if (initConfig) {
+          setHistory(createHistory(initConfig));
+        }
+      });
+    }
+  }, []);
 
   useEffect(() => {
     saveConfig(config);
@@ -340,15 +359,18 @@ export function App() {
     const clipped = clipPointsToFloor(points, floorPlan);
     setDraft(null);
     if (!clipped || clipped.length < 3) return;
-    setTilePicker({
-      mode: 'pick',
-      target: 'new-area',
-      area: {
-        id: crypto.randomUUID(),
-        kind: 'polygon',
-        points: clipped,
-      },
+    const area = {
+      id: crypto.randomUUID(),
+      kind: 'polygon',
+      points: clipped,
+      layer: defaultLayerPlacement(config.baseLayer.tileId),
+    };
+    commit({
+      ...config,
+      areas: [...config.areas, area],
     });
+    setSelectedId(area.id);
+    setTool('select');
   }
 
   function finishRect(a, b) {
@@ -365,15 +387,18 @@ export function App() {
     const w = Math.abs(a[0] - b[0]);
     const ht = Math.abs(a[1] - b[1]);
     if (w < 1 || ht < 1) return;
-    setTilePicker({
-      mode: 'pick',
-      target: 'new-area',
-      area: {
-        id: crypto.randomUUID(),
-        kind: 'rect',
-        points,
-      },
+    const area = {
+      id: crypto.randomUUID(),
+      kind: 'rect',
+      points,
+      layer: defaultLayerPlacement(config.baseLayer.tileId),
+    };
+    commit({
+      ...config,
+      areas: [...config.areas, area],
     });
+    setSelectedId(area.id);
+    setTool('select');
   }
 
   function closeTilePicker() {
@@ -403,15 +428,7 @@ export function App() {
     if (!tilePicker) return;
     const library = libraryOverride || config.tileLibrary;
 
-    if (tilePicker.target === 'new-area') {
-      const area = {
-        ...tilePicker.area,
-        layer: defaultLayerPlacement(tileId),
-      };
-      commit({ ...config, tileLibrary: library, areas: [...config.areas, area] });
-      setSelectedId(area.id);
-      setTool('select');
-    } else if (tilePicker.target === 'base') {
+    if (tilePicker.target === 'base') {
       commit({
         ...config,
         tileLibrary: library,
@@ -461,6 +478,24 @@ export function App() {
       setEditingTileId(null);
       setLiveTileDraft(null);
     }
+  }
+
+  async function resetToInit() {
+    if (!window.confirm('Reset to initial configuration? Your current work will be lost.')) return;
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(CAMERA_STORAGE_KEY);
+    const initConfig = await loadInitJson();
+    setHistory(createHistory(initConfig ?? createDefaultConfig()));
+    setCamera(normalizeCamera(createDefaultCamera()));
+    clearSelection();
+    setTool('select');
+    setDraft(null);
+    setLiveAreas(null);
+    setSnapGuides(emptySnapGuides());
+    setEditingTileId(null);
+    setLiveTileDraft(null);
+    setTilePicker(null);
+    setPickerDraftTile(null);
   }
 
   function deleteSelected() {
@@ -903,6 +938,7 @@ export function App() {
           />
           <button type="button" class="btn" onClick=${() => downloadConfig(config)}>Export JSON</button>
           <button type="button" class="btn" onClick=${() => fileRef.current?.click()}>Import JSON</button>
+          <button type="button" class="btn danger" title="Clear saved data and reload from init.json" onClick=${resetToInit}>Reset</button>
           <input
             ref=${fileRef}
             type="file"
@@ -927,9 +963,9 @@ export function App() {
             <p class="hint">
               ${is3d
                 ? '3D mode is read-only. Switch to Edit to change layers, draw areas, or resize.'
-                : h`Draw an area to pick a tile from the library. Drag the
+                : h`New areas start with the base tile. Drag the
               <span class="layer-drag-handle inline">⋮⋮</span> grip to reorder stacking.
-              Later areas sit on top. Each layer keeps its own offset and orientation.`}
+              Later areas sit on top. Each layer keeps its own tile, offset, and orientation.`}
             </p>
             <ul class="area-list">
               <li>
@@ -1010,10 +1046,28 @@ export function App() {
                   <button
                     type="button"
                     class="btn"
-                    onClick=${() => setTilePicker({ mode: 'pick', target: 'base' })}
+                    onClick=${() =>
+                      setTilePicker((prev) =>
+                        prev?.target === 'base' ? null : { mode: 'pick', target: 'base' },
+                      )}
                   >
                     Change tile type
                   </button>
+                  ${tilePicker?.target === 'base'
+                    ? h`
+                        <${TilePickerPanel}
+                          title="Choose tile for base layer"
+                          library=${config.tileLibrary}
+                          mode=${tilePicker.mode}
+                          draftTile=${pickerDraftTile}
+                          onPick=${pickTileFromLibrary}
+                          onCancel=${cancelTilePicker}
+                          onStartCreate=${startPickerCreate}
+                          onDraftChange=${setPickerDraftTile}
+                          onSaveDraft=${savePickerDraftTile}
+                        />
+                      `
+                    : null}
                   <${LayerPlacementFields}
                     layer=${liveBaseLayer || config.baseLayer}
                     tile=${findTile(
@@ -1036,14 +1090,33 @@ export function App() {
                     type="button"
                     class="btn"
                     onClick=${() =>
-                      setTilePicker({
-                        mode: 'pick',
-                        target: 'change-area',
-                        areaId: selectedArea.id,
-                      })}
+                      setTilePicker((prev) =>
+                        prev?.target === 'change-area' && prev.areaId === selectedArea.id
+                          ? null
+                          : {
+                              mode: 'pick',
+                              target: 'change-area',
+                              areaId: selectedArea.id,
+                            },
+                      )}
                   >
                     Change tile type
                   </button>
+                  ${tilePicker?.target === 'change-area' && tilePicker.areaId === selectedArea.id
+                    ? h`
+                        <${TilePickerPanel}
+                          title="Choose tile type"
+                          library=${config.tileLibrary}
+                          mode=${tilePicker.mode}
+                          draftTile=${pickerDraftTile}
+                          onPick=${pickTileFromLibrary}
+                          onCancel=${cancelTilePicker}
+                          onStartCreate=${startPickerCreate}
+                          onDraftChange=${setPickerDraftTile}
+                          onSaveDraft=${savePickerDraftTile}
+                        />
+                      `
+                    : null}
                   <${LayerPlacementFields}
                     layer=${liveAreaLayer || selectedArea.layer}
                     tile=${findTile(
@@ -1342,23 +1415,6 @@ export function App() {
           </div>
         </div>
       </div>
-
-      <${TilePickerModal}
-        open=${!!tilePicker}
-        title=${tilePicker?.target === 'new-area'
-          ? 'Choose tile for new layer'
-          : tilePicker?.target === 'base'
-            ? 'Choose tile for base layer'
-            : 'Choose tile type'}
-        library=${config.tileLibrary}
-        mode=${tilePicker?.mode || 'pick'}
-        draftTile=${pickerDraftTile}
-        onPick=${pickTileFromLibrary}
-        onCancel=${cancelTilePicker}
-        onStartCreate=${startPickerCreate}
-        onDraftChange=${setPickerDraftTile}
-        onSaveDraft=${savePickerDraftTile}
-      />
     </div>
   `;
 }

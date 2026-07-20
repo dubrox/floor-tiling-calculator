@@ -126,13 +126,24 @@ export function normalizeConfig(raw) {
   };
 }
 
+export async function loadInitJson() {
+  try {
+    const res = await fetch('./init.json', { cache: 'no-store' });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return normalizeConfig(data);
+  } catch {
+    return null;
+  }
+}
+
 export function loadConfig() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return createDefaultConfig();
+    if (!raw) return null; // caller will try init.json first
     return normalizeConfig(JSON.parse(raw));
   } catch {
-    return createDefaultConfig();
+    return null;
   }
 }
 

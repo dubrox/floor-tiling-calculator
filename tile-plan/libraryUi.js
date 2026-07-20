@@ -72,12 +72,6 @@ export function TileDefinitionFields({ tile, onChange, onCommit, imageInputRef: 
         />
       </div>
       <div class="field">
-        <label>Preview</label>
-        <div class="row swatch-row">
-          <${TileSwatch} tile=${tile} large=${true} />
-        </div>
-      </div>
-      <div class="field">
         <label>Color</label>
         <input
           type="color"
@@ -224,8 +218,7 @@ function TilePickerCard({ tile, onPick }) {
   `;
 }
 
-export function TilePickerModal({
-  open,
+export function TilePickerPanel({
   title,
   library,
   mode,
@@ -236,50 +229,39 @@ export function TilePickerModal({
   onDraftChange,
   onSaveDraft,
 }) {
-  if (!open) return null;
-
   return h`
-    <div class="modal-backdrop" onClick=${onCancel}>
-      <div class="modal tile-picker-modal" onClick=${(e) => e.stopPropagation()}>
-        <header class="modal-header">
-          <h2>${mode === 'create' ? 'New tile type' : title}</h2>
-          <button type="button" class="btn btn-icon modal-close" title="Close" onClick=${onCancel}>
-            ×
-          </button>
-        </header>
-
-        ${mode === 'create'
-          ? h`
-              <div class="modal-body">
-                <p class="hint">Define tile appearance and dimensions. Offset and rotation are set per layer.</p>
-                <${TileDefinitionFields}
-                  tile=${draftTile}
-                  onChange=${onDraftChange}
-                  onCommit=${onDraftChange}
-                />
-              </div>
-              <footer class="modal-footer">
-                <button type="button" class="btn" onClick=${onCancel}>Cancel</button>
-                <button type="button" class="btn active" onClick=${onSaveDraft}>Save & use</button>
-              </footer>
-            `
-          : h`
-              <div class="modal-body">
-                <p class="hint">Choose a tile from the library. Each layer keeps its own offset and orientation.</p>
-                <div class="tile-picker-grid">
-                  ${library.map(
-                    (tile) => h`
-                      <${TilePickerCard} key=${tile.id} tile=${tile} onPick=${onPick} />
-                    `,
-                  )}
-                </div>
-              </div>
-              <footer class="modal-footer">
-                <button type="button" class="btn" onClick=${onCancel}>Cancel</button>
-                <button type="button" class="btn" onClick=${onStartCreate}>Add new tile type</button>
-              </footer>
-            `}
+    <div class="tile-picker-panel">
+      <div class="panel-heading-row">
+        <h3>${mode === 'create' ? 'New tile type' : title}</h3>
+        <button type="button" class="btn btn-icon" title="Close" onClick=${onCancel}>×</button>
       </div>
+
+      ${mode === 'create'
+        ? h`
+            <p class="hint">Define tile appearance and dimensions. Offset and rotation are set per layer.</p>
+            <${TileDefinitionFields}
+              tile=${draftTile}
+              onChange=${onDraftChange}
+              onCommit=${onDraftChange}
+            />
+            <div class="tile-picker-actions">
+              <button type="button" class="btn" onClick=${onCancel}>Cancel</button>
+              <button type="button" class="btn active" onClick=${onSaveDraft}>Save & use</button>
+            </div>
+          `
+        : h`
+            <p class="hint">Choose a tile from the library. Each layer keeps its own offset and orientation.</p>
+            <div class="tile-picker-grid">
+              ${library.map(
+                (tile) => h`
+                  <${TilePickerCard} key=${tile.id} tile=${tile} onPick=${onPick} />
+                `,
+              )}
+            </div>
+            <div class="tile-picker-actions">
+              <button type="button" class="btn" onClick=${onStartCreate}>Add new tile type</button>
+            </div>
+          `}
     </div>
   `;
 }
