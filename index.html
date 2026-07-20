@@ -4,11 +4,61 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Tile plan</title>
+  <style>
+    /* Critical boot styles: visible before CSS/JS modules load */
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #0d0d0d;
+      color: #e8e8e8;
+    }
+    #boot-loader {
+      position: fixed;
+      inset: 0;
+      z-index: 3000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+      background: #0d0d0d;
+      cursor: wait;
+      user-select: none;
+    }
+    #boot-loader .loading-panel {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1rem;
+      padding: 1.5rem 1.75rem;
+      background: #1a1a1a;
+      border: 1px solid #2e2e2e;
+      border-radius: 8px;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+      min-width: 12rem;
+    }
+    #boot-loader .loading-spinner {
+      width: 2.25rem;
+      height: 2.25rem;
+      border: 3px solid #333;
+      border-top-color: #4a9eff;
+      border-radius: 50%;
+      animation: boot-spin 0.75s linear infinite;
+    }
+    #boot-loader .loading-message {
+      margin: 0;
+      font: 0.95rem/1.4 "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+      color: #e8e8e8;
+    }
+    @keyframes boot-spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
   <link rel="stylesheet" href="./tile-plan/styles.css">
   <script type="importmap">
   {
     "imports": {
       "react": "https://esm.sh/react@18.3.1",
+      "react-dom": "https://esm.sh/react-dom@18.3.1",
       "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
       "htm": "https://esm.sh/htm@3.1.1",
       "polygon-clipping": "https://esm.sh/polygon-clipping@0.15.7"
@@ -17,6 +67,12 @@
   </script>
 </head>
 <body>
+  <div id="boot-loader" class="loading-overlay" role="alertdialog" aria-busy="true" aria-live="assertive">
+    <div class="loading-panel">
+      <div class="loading-spinner" aria-hidden="true"></div>
+      <p class="loading-message">Loading…</p>
+    </div>
+  </div>
   <div id="root"></div>
   <script type="module" src="./tile-plan/main.js"></script>
 </body>

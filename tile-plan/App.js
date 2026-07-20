@@ -5,10 +5,12 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
+import { flushSync } from 'react-dom';
 import {
   buildFloorPlan,
   parseSweetHome3dFile,
@@ -163,6 +165,27 @@ const TilePreviewLayer = memo(function TilePreviewLayer({ preview }) {
   `;
 });
 
+function LoadingOverlay({ message }) {
+  return h`
+    <div class="loading-overlay" role="alertdialog" aria-busy="true" aria-live="assertive">
+      <div class="loading-panel">
+        <div class="loading-spinner" aria-hidden="true"></div>
+        <p class="loading-message">${message || 'Loading…'}</p>
+      </div>
+    </div>
+  `;
+}
+
+function waitForPaint() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+}
+
+function dismissBootLoader() {
+  document.getElementById('boot-loader')?.remove();
+}
+
 function svgPoint(svg, clientX, clientY) {
   const pt = svg.createSVGPoint();
   pt.x = clientX;
@@ -252,6 +275,10 @@ export function App() {
   const [liveTileDraft, setLiveTileDraft] = useState(null);
   const [saveMenuOpen, setSaveMenuOpen] = useState(false);
   const [addLayerMenuOpen, setAddLayerMenuOpen] = useState(false);
+  const [floorXmlPromptOpen, setFloorXmlPromptOpen] = useState(false);
+  const [busyMessage, setBusyMessage] = useState(() =>
+    noSavedConfig.current ? 'Loading init.json…' : null,
+  );
   const [liveLayerName, setLiveLayerName] = useState('');
   const [liveBounds, setLiveBounds] = useState(null);
   const fileRef = useRef(null);
@@ -263,6 +290,8 @@ export function App() {
   const orbitRef = useRef(null);
   const cameraRef = useRef(camera);
   const cameraSaveTimerRef = useRef(null);
+  const busyRef = useRef(busyMessage);
+  busyRef.current = busyMessage;
   const is3d = viewMode === '3d';
 
   const selectedAreaId = selectedId && selectedId !== BASE_SELECTION ? selectedId : null;
@@ -312,14 +341,32 @@ export function App() {
     [displayConfig.areas, selectedAreaId],
   );
 
+  useLayoutEffect(() => {
+    // HTML boot loader covers module download + first React render; remove once App has painted.
+    dismissBootLoader();
+  }, []);
+
   useEffect(() => {
-    if (noSavedConfig.current) {
-      loadInitJson().then((initConfig) => {
+    if (!noSavedConfig.current) return undefined;
+    let cancelled = false;
+    (async () => {
+      setBusyMessage('Loading init.json…');
+      await waitForPaint();
+      try {
+        const initConfig = await loadInitJson();
+        if (cancelled) return;
         if (initConfig) {
-          setHistory(createHistory(initConfig));
+          flushSync(() => {
+            setHistory(createHistory(initConfig));
+          });
         }
-      });
-    }
+      } finally {
+        if (!cancelled) setBusyMessage(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -471,6 +518,10 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e) => {
+      if (busyRef.current) {
+        e.preventDefault();
+        return;
+      }
       if (isTypingTarget(e.target)) return;
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.key.toLowerCase() === 'z' && !e.shiftKey) {
@@ -650,20 +701,34 @@ export function App() {
     }
   }
 
+  async function runBusy(message, work) {
+    setBusyMessage(message);
+    await waitForPaint();
+    try {
+      await work();
+    } finally {
+      setBusyMessage(null);
+    }
+  }
+
   async function resetToInit() {
     if (!window.confirm('Reset to initial configuration? Your current work will be lost.')) return;
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem(CAMERA_STORAGE_KEY);
-    const initConfig = await loadInitJson();
-    setHistory(createHistory(initConfig ?? createDefaultConfig()));
-    setCamera(normalizeCamera(createDefaultCamera()));
-    selectBase();
-    setTool('select');
-    setDraft(null);
-    setLiveAreas(null);
-    setSnapGuides(emptySnapGuides());
-    setEditingTileId(null);
-    setLiveTileDraft(null);
+    await runBusy('Loading init.json…', async () => {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(CAMERA_STORAGE_KEY);
+      const initConfig = await loadInitJson();
+      flushSync(() => {
+        setHistory(createHistory(initConfig ?? createDefaultConfig()));
+        setCamera(normalizeCamera(createDefaultCamera()));
+        selectBase();
+        setTool('select');
+        setDraft(null);
+        setLiveAreas(null);
+        setSnapGuides(emptySnapGuides());
+        setEditingTileId(null);
+        setLiveTileDraft(null);
+      });
+    });
   }
 
   function renameBaseLayer(name) {
@@ -1094,13 +1159,23 @@ export function App() {
     e.target.value = '';
     if (!file) return;
     try {
-      const imported = await parseImportedFile(file);
-      commit(imported);
-      selectBase();
-      setTool('select');
+      await runBusy('Importing JSON…', async () => {
+        const imported = await parseImportedFile(file);
+        flushSync(() => {
+          commit(imported);
+          selectBase();
+          setTool('select');
+        });
+      });
     } catch (err) {
       alert(`Could not import JSON: ${err.message || err}`);
     }
+  }
+
+  async function exportJson() {
+    await runBusy('Exporting JSON…', async () => {
+      downloadConfig(config);
+    });
   }
 
   async function onImportFloorFile(e) {
@@ -1194,7 +1269,7 @@ export function App() {
                       class="dropdown-item"
                       onClick=${() => {
                         setSaveMenuOpen(false);
-                        downloadConfig(config);
+                        exportJson();
                       }}
                     >Export JSON</button>
                     <button
@@ -1210,9 +1285,10 @@ export function App() {
                       type="button"
                       class="dropdown-item"
                       disabled=${is3d}
-                      onClick=${() => {
+                      onClick=${(e) => {
+                        e.stopPropagation();
                         setSaveMenuOpen(false);
-                        floorFileRef.current?.click();
+                        setFloorXmlPromptOpen(true);
                       }}
                     >Load floor XML</button>
                     <button
@@ -1710,6 +1786,47 @@ export function App() {
           </div>
         </div>
       </div>
+
+      ${floorXmlPromptOpen
+        ? h`
+            <div
+              class="modal-backdrop"
+              onClick=${() => setFloorXmlPromptOpen(false)}
+            >
+              <div
+                class="modal-dialog"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="floor-xml-prompt-title"
+                onClick=${(e) => e.stopPropagation()}
+              >
+                <h3 id="floor-xml-prompt-title">Load floor XML</h3>
+                <p>
+                  Select a floor plan XML generated by the
+                  <strong>Sweet Home 3D HTML5 export extension</strong>.
+                </p>
+                <p class="modal-note">Other Sweet Home 3D XML formats are not supported.</p>
+                <div class="modal-actions">
+                  <button
+                    type="button"
+                    class="btn"
+                    onClick=${() => setFloorXmlPromptOpen(false)}
+                  >Cancel</button>
+                  <button
+                    type="button"
+                    class="btn primary"
+                    onClick=${() => {
+                      setFloorXmlPromptOpen(false);
+                      floorFileRef.current?.click();
+                    }}
+                  >Choose file…</button>
+                </div>
+              </div>
+            </div>
+          `
+        : null}
+
+      ${busyMessage ? h`<${LoadingOverlay} message=${busyMessage} />` : null}
     </div>
   `;
 }
