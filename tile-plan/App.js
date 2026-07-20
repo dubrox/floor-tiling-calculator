@@ -1,9 +1,8 @@
 import htm from 'htm';
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  FLOOR_AREA_M2,
-  FLOOR_POINTS_CM,
-  FLOOR_VIEWBOX,
+  buildFloorPlan,
+  parseSweetHome3dFile,
   pointsToPath,
 } from './floorPlan.js';
 import {
@@ -31,7 +30,6 @@ import {
 import {
   createDefaultCamera,
   downloadConfig,
-  fileToTileImageDataUrl,
   loadCamera,
   loadConfig,
   normalizeCamera,
@@ -39,11 +37,22 @@ import {
   saveCamera,
   saveConfig,
 } from './storage.js';
-import { clipPointsToFloor, computeTilingPreview, defaultTiling } from './tiling.js';
+import {
+  LayerPlacementFields,
+  TileLibraryPanel,
+  TilePickerModal,
+  TileSwatch,
+} from './libraryUi.js';
+import {
+  defaultLayerPlacement,
+  defaultTileDefinition,
+  findTile,
+  resolveConfigLayers,
+} from './tileLibrary.js';
+import { clipPointsToFloor, computeTilingPreview } from './tiling.js';
 
 const h = htm.bind(createElement);
 
-const ORIENTATION_PRESETS = [0, 45, 90];
 const BASE_SELECTION = 'base';
 const PITCH_STEP = 5;
 const YAW_STEP = 10;
@@ -113,154 +122,6 @@ function TilePiece({ piece, id }) {
   `;
 }
 
-function TilingFields({ tiling, onChange, onCommit }) {
-  const imageInputRef = useRef(null);
-
-  const set = (key, value, commit = false) => {
-    const next = { ...tiling, [key]: value };
-    onChange(next);
-    if (commit) onCommit(next);
-  };
-
-  async function onImagePicked(e) {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    try {
-      const imageDataUrl = await fileToTileImageDataUrl(file);
-      const next = { ...tiling, imageDataUrl };
-      onChange(next);
-      onCommit(next);
-    } catch (err) {
-      alert(err.message || 'Could not use that image');
-    }
-  }
-
-  function removeImage() {
-    const next = { ...tiling, imageDataUrl: null };
-    onChange(next);
-    onCommit(next);
-  }
-
-  return h`
-    <div class="panel">
-      <div class="field">
-        <label>Color</label>
-        <input
-          type="color"
-          value=${tiling.color}
-          onInput=${(e) => set('color', e.target.value)}
-          onChange=${(e) => set('color', e.target.value, true)}
-        />
-      </div>
-      <div class="field">
-        <label>Tile photo (optional)</label>
-        <div class="row image-row">
-          ${tiling.imageDataUrl
-            ? h`<img class="tile-thumb" src=${tiling.imageDataUrl} alt="Tile preview" />`
-            : h`<span class="hint">Uses color when no photo</span>`}
-          <button
-            type="button"
-            class="btn"
-            onClick=${() => imageInputRef.current?.click()}
-          >${tiling.imageDataUrl ? 'Replace' : 'Add photo'}</button>
-          ${tiling.imageDataUrl
-            ? h`
-                <button type="button" class="btn danger" onClick=${removeImage}>
-                  Remove
-                </button>
-              `
-            : null}
-          <input
-            ref=${imageInputRef}
-            type="file"
-            accept="image/*"
-            hidden
-            onChange=${onImagePicked}
-          />
-        </div>
-      </div>
-      <div class="field">
-        <label>Width (cm)</label>
-        <input
-          type="number"
-          min="0.1"
-          step="0.1"
-          value=${tiling.widthCm}
-          onInput=${(e) => set('widthCm', Number(e.target.value))}
-          onBlur=${(e) => set('widthCm', Number(e.target.value), true)}
-        />
-      </div>
-      <div class="field">
-        <label>Length (cm)</label>
-        <input
-          type="number"
-          min="0.1"
-          step="0.1"
-          value=${tiling.lengthCm}
-          onInput=${(e) => set('lengthCm', Number(e.target.value))}
-          onBlur=${(e) => set('lengthCm', Number(e.target.value), true)}
-        />
-      </div>
-      <div class="field">
-        <label>Spacing (cm)</label>
-        <input
-          type="number"
-          min="0"
-          step="0.1"
-          value=${tiling.spacingCm}
-          onInput=${(e) => set('spacingCm', Number(e.target.value))}
-          onBlur=${(e) => set('spacingCm', Number(e.target.value), true)}
-        />
-      </div>
-      <div class="field">
-        <label>Offset X (cm)</label>
-        <input
-          type="number"
-          step="0.1"
-          value=${tiling.offsetXCm}
-          onInput=${(e) => set('offsetXCm', Number(e.target.value))}
-          onBlur=${(e) => set('offsetXCm', Number(e.target.value), true)}
-        />
-      </div>
-      <div class="field">
-        <label>Offset Y (cm)</label>
-        <input
-          type="number"
-          step="0.1"
-          value=${tiling.offsetYCm}
-          onInput=${(e) => set('offsetYCm', Number(e.target.value))}
-          onBlur=${(e) => set('offsetYCm', Number(e.target.value), true)}
-        />
-      </div>
-      <div class="field">
-        <label>Orientation (°)</label>
-        <div class="row">
-          ${ORIENTATION_PRESETS.map(
-            (deg) => h`
-              <button
-                key=${deg}
-                type="button"
-                class=${`btn ${Number(tiling.orientationDeg) === deg ? 'active' : ''}`}
-                onClick=${() => set('orientationDeg', deg, true)}
-              >
-                ${deg}°
-              </button>
-            `,
-          )}
-        </div>
-        <input
-          type="number"
-          step="1"
-          value=${tiling.orientationDeg}
-          onInput=${(e) => set('orientationDeg', Number(e.target.value))}
-          onBlur=${(e) => set('orientationDeg', Number(e.target.value), true)}
-        />
-      </div>
-    </div>
-  `;
-}
-
 function svgPoint(svg, clientX, clientY) {
   const pt = svg.createSVGPoint();
   pt.x = clientX;
@@ -276,6 +137,19 @@ function mergeLiveAreas(areas, liveAreas) {
   return areas.map((a) => (liveAreas[a.id] ? { ...a, points: liveAreas[a.id] } : a));
 }
 
+function reorderAreas(areas, dragId, targetId, insertAfter) {
+  if (dragId === targetId) return areas;
+  const from = areas.findIndex((a) => a.id === dragId);
+  let to = areas.findIndex((a) => a.id === targetId);
+  if (from < 0 || to < 0) return areas;
+  const next = [...areas];
+  const [item] = next.splice(from, 1);
+  if (from < to) to -= 1;
+  if (insertAfter) to += 1;
+  next.splice(to, 0, item);
+  return next;
+}
+
 export function App() {
   const [history, setHistory] = useState(() => createHistory(loadConfig()));
   const config = history.present;
@@ -283,40 +157,59 @@ export function App() {
   /** null | 'base' | area uuid */
   const [selectedId, setSelectedId] = useState(null);
   const [draft, setDraft] = useState(null);
-  const [liveBase, setLiveBase] = useState(null);
-  const [liveAreaTiling, setLiveAreaTiling] = useState(null);
+  const [liveBaseLayer, setLiveBaseLayer] = useState(null);
+  const [liveAreaLayer, setLiveAreaLayer] = useState(null);
   const [liveAreas, setLiveAreas] = useState(null);
   const [snapGuides, setSnapGuides] = useState(() => emptySnapGuides());
   const [viewMode, setViewMode] = useState('edit'); // 'edit' | '3d'
   const [camera, setCamera] = useState(() => loadCamera());
   const [orbiting, setOrbiting] = useState(false);
+  const [layerDragId, setLayerDragId] = useState(null);
+  const [layerDrop, setLayerDrop] = useState(null);
+  const [editingTileId, setEditingTileId] = useState(null);
+  const [liveTileDraft, setLiveTileDraft] = useState(null);
+  const [tilePicker, setTilePicker] = useState(null);
+  const [pickerDraftTile, setPickerDraftTile] = useState(null);
   const fileRef = useRef(null);
+  const floorFileRef = useRef(null);
   const svgRef = useRef(null);
   const stageRef = useRef(null);
   const dragRef = useRef(null);
+  const layerDragRef = useRef(null);
   const orbitRef = useRef(null);
   const is3d = viewMode === '3d';
 
   const selectedAreaId = selectedId && selectedId !== BASE_SELECTION ? selectedId : null;
   const baseSelected = selectedId === BASE_SELECTION;
 
-  const displayConfig = useMemo(() => {
-    const next = {
+  const floorPlan = useMemo(() => buildFloorPlan(config.floorPlan), [config.floorPlan]);
+
+  const resolvedLayers = useMemo(() => {
+    const previewConfig = {
       ...config,
-      baseTiling: liveBase || config.baseTiling,
-      areas: mergeLiveAreas(config.areas, liveAreas),
+      baseLayer: liveBaseLayer || config.baseLayer,
+      areas: mergeLiveAreas(config.areas, liveAreas).map((area) => {
+        if (liveAreaLayer && selectedAreaId === area.id) {
+          return { ...area, layer: liveAreaLayer };
+        }
+        return area;
+      }),
     };
-    if (liveAreaTiling && selectedAreaId) {
-      next.areas = next.areas.map((a) =>
-        a.id === selectedAreaId ? { ...a, tiling: liveAreaTiling } : a,
-      );
-    }
-    return next;
-  }, [config, liveBase, liveAreaTiling, selectedAreaId, liveAreas]);
+    return resolveConfigLayers(previewConfig);
+  }, [config, liveBaseLayer, liveAreaLayer, selectedAreaId, liveAreas]);
+
+  const displayConfig = useMemo(
+    () => ({
+      ...config,
+      baseTiling: resolvedLayers.baseTiling,
+      areas: mergeLiveAreas(resolvedLayers.areas, liveAreas),
+    }),
+    [config, resolvedLayers, liveAreas],
+  );
 
   const preview = useMemo(
-    () => computeTilingPreview(displayConfig.baseTiling, displayConfig.areas),
-    [displayConfig],
+    () => computeTilingPreview(displayConfig.baseTiling, displayConfig.areas, floorPlan),
+    [displayConfig, floorPlan],
   );
 
   const selectedDisplay = useMemo(
@@ -333,11 +226,11 @@ export function App() {
   }, [camera]);
 
   useEffect(() => {
-    setLiveBase(null);
-  }, [config.baseTiling]);
+    setLiveBaseLayer(null);
+  }, [config.baseLayer]);
 
   useEffect(() => {
-    setLiveAreaTiling(null);
+    setLiveAreaLayer(null);
   }, [config.areas, selectedAreaId]);
 
   useEffect(() => {
@@ -347,6 +240,9 @@ export function App() {
     setSnapGuides(emptySnapGuides());
     dragRef.current = null;
     setTool('select');
+    setLayerDragId(null);
+    setLayerDrop(null);
+    layerDragRef.current = null;
   }, [is3d]);
 
   useEffect(() => {
@@ -393,6 +289,15 @@ export function App() {
         e.preventDefault();
         redo();
       } else if (e.key === 'Escape') {
+        if (tilePicker) {
+          if (tilePicker.mode === 'create') {
+            setTilePicker((prev) => (prev ? { ...prev, mode: 'pick' } : null));
+            setPickerDraftTile(null);
+          } else {
+            closeTilePicker();
+          }
+          return;
+        }
         setDraft(null);
         setLiveAreas(null);
         setSnapGuides(emptySnapGuides());
@@ -432,18 +337,18 @@ export function App() {
   }
 
   function finishPolygon(points) {
-    const clipped = clipPointsToFloor(points);
+    const clipped = clipPointsToFloor(points, floorPlan);
     setDraft(null);
     if (!clipped || clipped.length < 3) return;
-    const area = {
-      id: crypto.randomUUID(),
-      kind: 'polygon',
-      points: clipped,
-      tiling: { ...defaultTiling(), color: '#6b8cae' },
-    };
-    commit({ ...config, areas: [...config.areas, area] });
-    setSelectedId(area.id);
-    setTool('select');
+    setTilePicker({
+      mode: 'pick',
+      target: 'new-area',
+      area: {
+        id: crypto.randomUUID(),
+        kind: 'polygon',
+        points: clipped,
+      },
+    });
   }
 
   function finishRect(a, b) {
@@ -453,23 +358,109 @@ export function App() {
       maxX: Math.max(a[0], b[0]),
       maxY: Math.max(a[1], b[1]),
     });
-    const clipped = clipPointsToFloor(points);
+    const clipped = clipPointsToFloor(points, floorPlan);
     setDraft(null);
     dragRef.current = null;
     if (!clipped || clipped.length < 3) return;
     const w = Math.abs(a[0] - b[0]);
     const ht = Math.abs(a[1] - b[1]);
     if (w < 1 || ht < 1) return;
-    // Keep axis-aligned corners for clean resize; tiling already clips to floor.
-    const area = {
-      id: crypto.randomUUID(),
-      kind: 'rect',
-      points,
-      tiling: { ...defaultTiling(), color: '#6b8cae' },
+    setTilePicker({
+      mode: 'pick',
+      target: 'new-area',
+      area: {
+        id: crypto.randomUUID(),
+        kind: 'rect',
+        points,
+      },
+    });
+  }
+
+  function closeTilePicker() {
+    setTilePicker(null);
+    setPickerDraftTile(null);
+  }
+
+  function cancelTilePicker() {
+    if (tilePicker?.mode === 'create') {
+      setTilePicker((prev) => (prev ? { ...prev, mode: 'pick' } : null));
+      setPickerDraftTile(null);
+      return;
+    }
+    closeTilePicker();
+  }
+
+  function layerWithTileId(existingLayer, tileId) {
+    return {
+      tileId,
+      offsetXCm: existingLayer?.offsetXCm ?? 0,
+      offsetYCm: existingLayer?.offsetYCm ?? 0,
+      orientationDeg: existingLayer?.orientationDeg ?? 0,
     };
-    commit({ ...config, areas: [...config.areas, area] });
-    setSelectedId(area.id);
-    setTool('select');
+  }
+
+  function applyTileSelection(tileId, libraryOverride) {
+    if (!tilePicker) return;
+    const library = libraryOverride || config.tileLibrary;
+
+    if (tilePicker.target === 'new-area') {
+      const area = {
+        ...tilePicker.area,
+        layer: defaultLayerPlacement(tileId),
+      };
+      commit({ ...config, tileLibrary: library, areas: [...config.areas, area] });
+      setSelectedId(area.id);
+      setTool('select');
+    } else if (tilePicker.target === 'base') {
+      commit({
+        ...config,
+        tileLibrary: library,
+        baseLayer: layerWithTileId(config.baseLayer, tileId),
+      });
+    } else if (tilePicker.target === 'change-area') {
+      commit({
+        ...config,
+        tileLibrary: library,
+        areas: config.areas.map((a) =>
+          a.id === tilePicker.areaId ? { ...a, layer: layerWithTileId(a.layer, tileId) } : a,
+        ),
+      });
+    }
+    closeTilePicker();
+  }
+
+  function pickTileFromLibrary(tileId) {
+    applyTileSelection(tileId);
+  }
+
+  function startPickerCreate() {
+    setPickerDraftTile(defaultTileDefinition(`Tile ${config.tileLibrary.length + 1}`));
+    setTilePicker((prev) => (prev ? { ...prev, mode: 'create' } : prev));
+  }
+
+  function savePickerDraftTile() {
+    if (!pickerDraftTile || !tilePicker) return;
+    const tile = { ...pickerDraftTile, id: pickerDraftTile.id || crypto.randomUUID() };
+    applyTileSelection(tile.id, [...config.tileLibrary, tile]);
+  }
+
+  function commitTileLibraryEdit(tile) {
+    setLiveTileDraft(null);
+    commit({
+      ...config,
+      tileLibrary: config.tileLibrary.map((t) => (t.id === tile.id ? tile : t)),
+    });
+  }
+
+  function deleteTileFromLibrary(tileId) {
+    commit({
+      ...config,
+      tileLibrary: config.tileLibrary.filter((t) => t.id !== tileId),
+    });
+    if (editingTileId === tileId) {
+      setEditingTileId(null);
+      setLiveTileDraft(null);
+    }
   }
 
   function deleteSelected() {
@@ -478,8 +469,51 @@ export function App() {
     clearSelection();
   }
 
+  function startLayerDrag(e, areaId) {
+    if (is3d) return;
+    layerDragRef.current = areaId;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', areaId);
+    setLayerDragId(areaId);
+  }
+
+  function endLayerDrag() {
+    layerDragRef.current = null;
+    setLayerDragId(null);
+    setLayerDrop(null);
+  }
+
+  function updateLayerDropTarget(e, areaId) {
+    const dragId = layerDragRef.current;
+    if (is3d || !dragId || dragId === areaId) {
+      setLayerDrop(null);
+      return;
+    }
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const rect = e.currentTarget.getBoundingClientRect();
+    const insertAfter = e.clientY > rect.top + rect.height / 2;
+    setLayerDrop({ id: areaId, insertAfter });
+  }
+
+  function finishLayerDrop(e, targetId) {
+    e.preventDefault();
+    const dragId = e.dataTransfer.getData('text/plain') || layerDragRef.current;
+    if (!dragId || dragId === targetId || is3d) {
+      endLayerDrag();
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const insertAfter = e.clientY > rect.top + rect.height / 2;
+    commit({
+      ...config,
+      areas: reorderAreas(config.areas, dragId, targetId, insertAfter),
+    });
+    endLayerDrag();
+  }
+
   function commitAreaPoints(areaId, points) {
-    if (!areasIntersectFloor(points) && !clipPointsToFloor(points)) {
+    if (!areasIntersectFloor(points, floorPlan) && !clipPointsToFloor(points, floorPlan)) {
       setLiveAreas(null);
       setSnapGuides(emptySnapGuides());
       return;
@@ -526,16 +560,15 @@ export function App() {
     const drag = dragRef.current;
     if (!drag) return;
 
-    const baseTiling = liveBase || config.baseTiling;
-    const activeArea = config.areas.find((a) => a.id === drag.areaId);
-    const activeTiling = liveAreaTiling && selectedAreaId === drag.areaId
-      ? liveAreaTiling
-      : activeArea?.tiling;
+    const baseTiling = displayConfig.baseTiling;
+    const activeArea = displayConfig.areas.find((a) => a.id === drag.areaId);
+    const activeTiling = activeArea?.tiling;
     const { groups } = collectSnapTargets(
-      config.areas,
+      displayConfig.areas,
       drag.areaId,
       baseTiling,
       activeTiling,
+      floorPlan,
     );
     const guides = emptySnapGuides();
 
@@ -751,6 +784,35 @@ export function App() {
     }
   }
 
+  async function onImportFloorFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || is3d) return;
+    try {
+      const spec = await parseSweetHome3dFile(file);
+      if (config.areas.length > 0) {
+        const ok = window.confirm(
+          'Loading a new floor removes existing areas because they use the old layout. Continue?',
+        );
+        if (!ok) return;
+      }
+      commit({
+        ...config,
+        floorPlanId: spec.id,
+        floorPlan: spec,
+        areas: [],
+      });
+      clearSelection();
+      setDraft(null);
+      setTool('select');
+    } catch (err) {
+      alert(`Could not load floor XML: ${err.message || err}`);
+    }
+  }
+
+  const floorLabel = floorPlan.label || floorPlan.id;
+  const baseTile = findTile(config.tileLibrary, config.baseLayer.tileId);
+
   const draftPath =
     draft?.kind === 'polygon'
       ? pointsToPath(draft.cursor ? [...draft.points, draft.cursor] : draft.points)
@@ -825,6 +887,20 @@ export function App() {
           >Polygon</button>
         </div>
         <div class="toolbar-group">
+          <button
+            type="button"
+            class="btn"
+            disabled=${is3d}
+            title="Load floor outline from Sweet Home 3D Home.xml"
+            onClick=${() => floorFileRef.current?.click()}
+          >Load floor XML</button>
+          <input
+            ref=${floorFileRef}
+            type="file"
+            accept=".xml,application/xml,text/xml"
+            hidden
+            onChange=${onImportFloorFile}
+          />
           <button type="button" class="btn" onClick=${() => downloadConfig(config)}>Export JSON</button>
           <button type="button" class="btn" onClick=${() => fileRef.current?.click()}>Import JSON</button>
           <input
@@ -851,33 +927,62 @@ export function App() {
             <p class="hint">
               ${is3d
                 ? '3D mode is read-only. Switch to Edit to change layers, draw areas, or resize.'
-                : h`Select a layer to edit its tiling. Later areas in the list sit on top (hidden tiles
-              underneath are not counted). Drag/resize snaps to the underlying layer grid
-              <span class="snap-swatch underlying"></span>, this layer’s own tile grid
-              <span class="snap-swatch inner"></span>, and nearby edges.`}
+                : h`Draw an area to pick a tile from the library. Drag the
+              <span class="layer-drag-handle inline">⋮⋮</span> grip to reorder stacking.
+              Later areas sit on top. Each layer keeps its own offset and orientation.`}
             </p>
             <ul class="area-list">
               <li>
                 <button
                   type="button"
-                  class=${`btn select ${baseSelected ? 'active' : ''}`}
+                  class=${`btn select layer-select ${baseSelected ? 'active' : ''}`}
                   onClick=${selectBase}
                 >
-                  Base · ${preview.baseCount} tiles
+                  ${baseTile ? h`<${TileSwatch} tile=${baseTile} />` : null}
+                  <span>Base · ${preview.baseCount} tiles</span>
                 </button>
               </li>
               ${config.areas.map(
-                (area, i) => h`
-                  <li key=${area.id}>
+                (area, i) => {
+                  const areaTile = findTile(config.tileLibrary, area.layer?.tileId);
+                  const dropBefore = layerDrop?.id === area.id && !layerDrop.insertAfter;
+                  const dropAfter = layerDrop?.id === area.id && layerDrop.insertAfter;
+                  return h`
+                  <li
+                    key=${area.id}
+                    class=${[
+                      layerDragId === area.id ? 'layer-dragging' : '',
+                      dropBefore ? 'layer-drop-before' : '',
+                      dropAfter ? 'layer-drop-after' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                    onDragOver=${(e) => updateLayerDropTarget(e, area.id)}
+                    onDragLeave=${(e) => {
+                      if (e.currentTarget.contains(e.relatedTarget)) return;
+                      if (layerDrop?.id === area.id) setLayerDrop(null);
+                    }}
+                    onDrop=${(e) => finishLayerDrop(e, area.id)}
+                  >
+                    <span
+                      class="layer-drag-handle"
+                      draggable=${!is3d}
+                      title="Drag to reorder layer"
+                      onDragStart=${(e) => startLayerDrag(e, area.id)}
+                      onDragEnd=${endLayerDrag}
+                    >⋮⋮</span>
                     <button
                       type="button"
-                      class=${`btn select ${selectedAreaId === area.id ? 'active' : ''}`}
+                      class=${`btn select layer-select ${selectedAreaId === area.id ? 'active' : ''}`}
                       onClick=${() => selectArea(area.id)}
                     >
-                      ${area.kind} ${i + 1}
-                      ${preview.areas.find((a) => a.id === area.id)
-                        ? ` · ${preview.areas.find((a) => a.id === area.id).count} tiles`
-                        : ''}
+                      ${areaTile ? h`<${TileSwatch} tile=${areaTile} />` : null}
+                      <span>
+                        ${area.kind} ${i + 1}
+                        ${preview.areas.find((a) => a.id === area.id)
+                          ? ` · ${preview.areas.find((a) => a.id === area.id).count} tiles`
+                          : ''}
+                      </span>
                     </button>
                     <button
                       type="button"
@@ -894,19 +999,31 @@ export function App() {
                       }}
                     >×</button>
                   </li>
-                `,
+                `;
+                },
               )}
             </ul>
 
             ${!is3d && baseSelected
               ? h`
-                  <h2>Base tiling</h2>
-                  <${TilingFields}
-                    tiling=${liveBase || config.baseTiling}
-                    onChange=${(t) => setLiveBase(t)}
-                    onCommit=${(t) => {
-                      setLiveBase(null);
-                      commit({ ...config, baseTiling: t });
+                  <h2>Base layer</h2>
+                  <button
+                    type="button"
+                    class="btn"
+                    onClick=${() => setTilePicker({ mode: 'pick', target: 'base' })}
+                  >
+                    Change tile type
+                  </button>
+                  <${LayerPlacementFields}
+                    layer=${liveBaseLayer || config.baseLayer}
+                    tile=${findTile(
+                      config.tileLibrary,
+                      (liveBaseLayer || config.baseLayer).tileId,
+                    )}
+                    onChange=${(layer) => setLiveBaseLayer(layer)}
+                    onCommit=${(layer) => {
+                      setLiveBaseLayer(null);
+                      commit({ ...config, baseLayer: layer });
                     }}
                   />
                 `
@@ -914,16 +1031,32 @@ export function App() {
 
             ${!is3d && selectedArea
               ? h`
-                  <h2>Area tiling</h2>
-                  <${TilingFields}
-                    tiling=${liveAreaTiling || selectedArea.tiling}
-                    onChange=${(t) => setLiveAreaTiling(t)}
-                    onCommit=${(t) => {
-                      setLiveAreaTiling(null);
+                  <h2>Area layer</h2>
+                  <button
+                    type="button"
+                    class="btn"
+                    onClick=${() =>
+                      setTilePicker({
+                        mode: 'pick',
+                        target: 'change-area',
+                        areaId: selectedArea.id,
+                      })}
+                  >
+                    Change tile type
+                  </button>
+                  <${LayerPlacementFields}
+                    layer=${liveAreaLayer || selectedArea.layer}
+                    tile=${findTile(
+                      config.tileLibrary,
+                      (liveAreaLayer || selectedArea.layer).tileId,
+                    )}
+                    onChange=${(layer) => setLiveAreaLayer(layer)}
+                    onCommit=${(layer) => {
+                      setLiveAreaLayer(null);
                       commit({
                         ...config,
                         areas: config.areas.map((a) =>
-                          a.id === selectedArea.id ? { ...a, tiling: t } : a,
+                          a.id === selectedArea.id ? { ...a, layer } : a,
                         ),
                       });
                     }}
@@ -932,6 +1065,33 @@ export function App() {
                 `
               : null}
           </section>
+
+          <${TileLibraryPanel}
+            library=${config.tileLibrary}
+            config=${config}
+            editingTileId=${editingTileId}
+            liveTileDraft=${liveTileDraft}
+            disabled=${is3d}
+            onSelectEdit=${(id) => {
+              setEditingTileId(id);
+              setLiveTileDraft(null);
+            }}
+            onAddTile=${() => {
+              const tile = defaultTileDefinition(`Tile ${config.tileLibrary.length + 1}`);
+              setEditingTileId(tile.id);
+              setLiveTileDraft(tile);
+            }}
+            onDeleteTile=${deleteTileFromLibrary}
+            onDraftChange=${setLiveTileDraft}
+            onCommitTile=${(tile) => {
+              if (!config.tileLibrary.some((t) => t.id === tile.id)) {
+                commit({ ...config, tileLibrary: [...config.tileLibrary, tile] });
+                setLiveTileDraft(null);
+                return;
+              }
+              commitTileLibraryEdit(tile);
+            }}
+          />
         </aside>
 
         <div class=${`canvas-wrap ${is3d ? 'view-3d' : ''}`}>
@@ -954,14 +1114,14 @@ export function App() {
           >
             <svg
               ref=${svgRef}
-              viewBox=${FLOOR_VIEWBOX.toString()}
+              viewBox=${floorPlan.viewBox.toString()}
               onDoubleClick=${onDoubleClick}
             >
-              <path class="floor-outline" d=${pointsToPath(FLOOR_POINTS_CM)} />
+              <path class="floor-outline" d=${pointsToPath(floorPlan.points)} />
 
               <defs>
                 <clipPath id="floor-clip">
-                  <path d=${pointsToPath(FLOOR_POINTS_CM)} />
+                  <path d=${pointsToPath(floorPlan.points)} />
                 </clipPath>
               </defs>
 
@@ -996,9 +1156,9 @@ export function App() {
                               key=${`sx-${type}-${x}`}
                               class=${`snap-guide ${type}`}
                               x1=${x}
-                              y1=${FLOOR_VIEWBOX.y}
+                              y1=${floorPlan.viewBox.y}
                               x2=${x}
-                              y2=${FLOOR_VIEWBOX.y + FLOOR_VIEWBOX.height}
+                              y2=${floorPlan.viewBox.y + floorPlan.viewBox.height}
                             />
                           `,
                         ),
@@ -1007,9 +1167,9 @@ export function App() {
                             <line
                               key=${`sy-${type}-${y}`}
                               class=${`snap-guide ${type}`}
-                              x1=${FLOOR_VIEWBOX.x}
+                              x1=${floorPlan.viewBox.x}
                               y1=${y}
-                              x2=${FLOOR_VIEWBOX.x + FLOOR_VIEWBOX.width}
+                              x2=${floorPlan.viewBox.x + floorPlan.viewBox.width}
                               y2=${y}
                             />
                           `,
@@ -1022,7 +1182,7 @@ export function App() {
               ${!is3d
                 ? displayConfig.areas.map((area) => {
                     const selected = selectedAreaId === area.id;
-                    const interior = selected ? clipPointsToFloor(area.points) : null;
+                    const interior = selected ? clipPointsToFloor(area.points, floorPlan) : null;
                     return h`
                       <g key=${`area-${area.id}`}>
                         ${interior
@@ -1176,10 +1336,29 @@ export function App() {
             : null}
 
           <div class="meta-overlay">
-            Floor ${FLOOR_AREA_M2.toFixed(2)} m² · units cm
+            Floor ${floorPlan.areaM2.toFixed(2)} m²
+            ${floorLabel ? ` · ${floorLabel}` : ''}
+            · units cm
           </div>
         </div>
       </div>
+
+      <${TilePickerModal}
+        open=${!!tilePicker}
+        title=${tilePicker?.target === 'new-area'
+          ? 'Choose tile for new layer'
+          : tilePicker?.target === 'base'
+            ? 'Choose tile for base layer'
+            : 'Choose tile type'}
+        library=${config.tileLibrary}
+        mode=${tilePicker?.mode || 'pick'}
+        draftTile=${pickerDraftTile}
+        onPick=${pickTileFromLibrary}
+        onCancel=${cancelTilePicker}
+        onStartCreate=${startPickerCreate}
+        onDraftChange=${setPickerDraftTile}
+        onSaveDraft=${savePickerDraftTile}
+      />
     </div>
   `;
 }

@@ -1,4 +1,4 @@
-import { FLOOR_BOUNDS, FLOOR_CENTROID, FLOOR_POINTS_CM, polygonBounds } from './floorPlan.js';
+import { polygonBounds } from './floorPlan.js';
 
 export const SNAP_THRESHOLD_CM = 6;
 export const MIN_RECT_SIZE_CM = 2;
@@ -31,10 +31,6 @@ function aabbsOverlap(a, b) {
   return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
 }
 
-/**
- * Tiling of the topmost layer underneath `areaId` (by list order: earlier = below).
- * Falls back to base when nothing below overlaps.
- */
 export function getUnderlyingTiling(areas, areaId, baseTiling) {
   const idx = areas.findIndex((a) => a.id === areaId);
   if (idx < 0) return baseTiling;
@@ -47,8 +43,9 @@ export function getUnderlyingTiling(areas, areaId, baseTiling) {
   return baseTiling;
 }
 
-function addTilingGridLines(xs, ys, tiling) {
+function addTilingGridLines(xs, ys, tiling, floorPlan) {
   if (!tiling) return;
+  const { bounds, centroid } = floorPlan;
   const w = Math.max(0.01, Number(tiling.widthCm) || 0.01);
   const h = Math.max(0.01, Number(tiling.lengthCm) || 0.01);
   const gap = Math.max(0, Number(tiling.spacingCm) || 0);
@@ -61,8 +58,8 @@ function addTilingGridLines(xs, ys, tiling) {
   const near0 = deg < 8 || deg > 172;
   const near90 = Math.abs(deg - 90) < 8;
   if (!near0 && !near90) {
-    const [cx, cy] = FLOOR_CENTROID;
-    const pad = Math.hypot(FLOOR_BOUNDS.width, FLOOR_BOUNDS.height);
+    const [cx, cy] = centroid;
+    const pad = Math.hypot(bounds.width, bounds.height);
     for (const step of [stepX, stepY]) {
       const i0 = Math.floor((-pad - ox) / step) - 1;
       const i1 = Math.ceil((pad - ox) / step) + 1;
@@ -76,10 +73,10 @@ function addTilingGridLines(xs, ys, tiling) {
 
   const horizStep = near90 ? stepY : stepX;
   const vertStep = near90 ? stepX : stepY;
-  const i0 = Math.floor((FLOOR_BOUNDS.minX - horizStep * 2 - ox) / horizStep);
-  const i1 = Math.ceil((FLOOR_BOUNDS.maxX + horizStep * 2 - ox) / horizStep);
-  const j0 = Math.floor((FLOOR_BOUNDS.minY - vertStep * 2 - oy) / vertStep);
-  const j1 = Math.ceil((FLOOR_BOUNDS.maxY + vertStep * 2 - oy) / vertStep);
+  const i0 = Math.floor((bounds.minX - horizStep * 2 - ox) / horizStep);
+  const i1 = Math.ceil((bounds.maxX + horizStep * 2 - ox) / horizStep);
+  const j0 = Math.floor((bounds.minY - vertStep * 2 - oy) / vertStep);
+  const j1 = Math.ceil((bounds.maxY + vertStep * 2 - oy) / vertStep);
 
   for (let i = i0; i <= i1; i++) xs.add(i * horizStep + ox);
   for (let j = j0; j <= j1; j++) ys.add(j * vertStep + oy);
@@ -89,13 +86,7 @@ function sortedLines(set) {
   return [...set].filter(Number.isFinite).sort((a, b) => a - b);
 }
 
-/**
- * Collect typed snap targets for editing an area.
- * - geometry: floor + other area edges
- * - underlying: tile grid of the layer underneath
- * - inner: tile grid of the area being edited (align to full/uncut tiles)
- */
-export function collectSnapTargets(areas, excludeId, baseTiling, activeTiling) {
+export function collectSnapTargets(areas, excludeId, baseTiling, activeTiling, floorPlan) {
   const geometryX = new Set();
   const geometryY = new Set();
   const underlyingX = new Set();
@@ -110,11 +101,11 @@ export function collectSnapTargets(areas, excludeId, baseTiling, activeTiling) {
     if (Number.isFinite(v)) set.add(v);
   };
 
-  addX(geometryX, FLOOR_BOUNDS.minX);
-  addX(geometryX, FLOOR_BOUNDS.maxX);
-  addY(geometryY, FLOOR_BOUNDS.minY);
-  addY(geometryY, FLOOR_BOUNDS.maxY);
-  for (const [x, y] of FLOOR_POINTS_CM) {
+  addX(geometryX, floorPlan.bounds.minX);
+  addX(geometryX, floorPlan.bounds.maxX);
+  addY(geometryY, floorPlan.bounds.minY);
+  addY(geometryY, floorPlan.bounds.maxY);
+  for (const [x, y] of floorPlan.points) {
     addX(geometryX, x);
     addY(geometryY, y);
   }
@@ -133,8 +124,8 @@ export function collectSnapTargets(areas, excludeId, baseTiling, activeTiling) {
   }
 
   const underlyingTiling = getUnderlyingTiling(areas, excludeId, baseTiling);
-  addTilingGridLines(underlyingX, underlyingY, underlyingTiling);
-  addTilingGridLines(innerX, innerY, activeTiling);
+  addTilingGridLines(underlyingX, underlyingY, underlyingTiling, floorPlan);
+  addTilingGridLines(innerX, innerY, activeTiling, floorPlan);
 
   return {
     groups: [
@@ -179,9 +170,6 @@ function pushGuide(guides, type, axis, line) {
   if (!arr.includes(line)) arr.push(line);
 }
 
-/**
- * Snap translation; returns [dx, dy] and mutates guides with typed lines.
- */
 export function snapTranslation(aabb, dx, dy, groups, guides, threshold = SNAP_THRESHOLD_CM) {
   const edgesX = [
     { edge: aabb.minX + dx, which: 'min' },
@@ -302,12 +290,12 @@ export function handlePosition(aabb, handleId) {
   }
 }
 
-export function areasIntersectFloor(points) {
+export function areasIntersectFloor(points, floorPlan) {
   const b = aabbFromPoints(points);
   return !(
-    b.maxX < FLOOR_BOUNDS.minX ||
-    b.minX > FLOOR_BOUNDS.maxX ||
-    b.maxY < FLOOR_BOUNDS.minY ||
-    b.minY > FLOOR_BOUNDS.maxY
+    b.maxX < floorPlan.bounds.minX ||
+    b.minX > floorPlan.bounds.maxX ||
+    b.maxY < floorPlan.bounds.minY ||
+    b.minY > floorPlan.bounds.maxY
   );
 }

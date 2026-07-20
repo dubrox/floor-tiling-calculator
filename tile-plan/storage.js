@@ -1,14 +1,29 @@
-import { FLOOR_PLAN_ID } from './floorPlan.js';
-import { defaultTiling, normalizeTiling } from './tiling.js';
+import {
+  createDefaultFloorPlanSpec,
+  DEFAULT_FLOOR_PLAN_ID,
+  normalizeFloorPlanSpec,
+} from './floorPlan.js';
+import {
+  CONFIG_VERSION,
+  defaultLayerPlacement,
+  defaultTileDefinition,
+  migrateLegacyConfig,
+  normalizeLayerPlacement,
+  normalizeTileDefinition,
+  normalizeTileLibrary,
+} from './tileLibrary.js';
 
 export const STORAGE_KEY = 'tile-plan:v1';
 export const CAMERA_STORAGE_KEY = 'tile-plan:camera:v1';
 
 export function createDefaultConfig() {
+  const defaultTile = defaultTileDefinition('Default');
   return {
-    version: 1,
-    floorPlanId: FLOOR_PLAN_ID,
-    baseTiling: defaultTiling(),
+    version: CONFIG_VERSION,
+    floorPlanId: DEFAULT_FLOOR_PLAN_ID,
+    floorPlan: createDefaultFloorPlanSpec(),
+    tileLibrary: [defaultTile],
+    baseLayer: defaultLayerPlacement(defaultTile.id),
     areas: [],
   };
 }
@@ -60,23 +75,53 @@ export function normalizeConfig(raw) {
   const base = createDefaultConfig();
   if (!raw || typeof raw !== 'object') return base;
 
-  const baseTiling = normalizeTiling(raw.baseTiling);
+  const floorPlan = normalizeFloorPlanSpec(
+    raw.floorPlan || {
+      id: raw.floorPlanId,
+      points: raw.floorPointsCm || raw.floorPoints,
+    },
+  );
 
-  const areas = Array.isArray(raw.areas)
-    ? raw.areas
-        .filter((a) => a && Array.isArray(a.points) && a.points.length >= 3)
-        .map((a) => ({
-          id: String(a.id || crypto.randomUUID()),
-          kind: a.kind === 'rect' ? 'rect' : 'polygon',
-          points: a.points.map(([x, y]) => [Number(x), Number(y)]),
-          tiling: normalizeTiling(a.tiling),
-        }))
-    : [];
+  let tileLibrary;
+  let baseLayer;
+  let areas;
+
+  if (Array.isArray(raw.tileLibrary) && raw.tileLibrary.length) {
+    tileLibrary = normalizeTileLibrary(raw.tileLibrary);
+    const fallbackTileId = tileLibrary[0].id;
+    baseLayer = normalizeLayerPlacement(raw.baseLayer, fallbackTileId);
+    if (!tileLibrary.some((t) => t.id === baseLayer.tileId)) {
+      baseLayer.tileId = fallbackTileId;
+    }
+    areas = Array.isArray(raw.areas)
+      ? raw.areas
+          .filter((a) => a && Array.isArray(a.points) && a.points.length >= 3)
+          .map((a) => {
+            const layer = normalizeLayerPlacement(a.layer || a.tiling, fallbackTileId);
+            if (!tileLibrary.some((t) => t.id === layer.tileId)) {
+              layer.tileId = fallbackTileId;
+            }
+            return {
+              id: String(a.id || crypto.randomUUID()),
+              kind: a.kind === 'rect' ? 'rect' : 'polygon',
+              points: a.points.map(([x, y]) => [Number(x), Number(y)]),
+              layer,
+            };
+          })
+      : [];
+  } else {
+    const migrated = migrateLegacyConfig(raw);
+    tileLibrary = migrated.tileLibrary;
+    baseLayer = migrated.baseLayer;
+    areas = migrated.areas;
+  }
 
   return {
-    version: 1,
-    floorPlanId: FLOOR_PLAN_ID,
-    baseTiling,
+    version: CONFIG_VERSION,
+    floorPlanId: floorPlan.id,
+    floorPlan,
+    tileLibrary,
+    baseLayer,
     areas,
   };
 }
@@ -93,14 +138,14 @@ export function loadConfig() {
 
 export function saveConfig(config) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizeConfig(config)));
   } catch (err) {
     console.warn('Could not save tiling config (storage full?)', err);
   }
 }
 
 export function exportConfigJson(config) {
-  return JSON.stringify(config, null, 2);
+  return JSON.stringify(normalizeConfig(config), null, 2);
 }
 
 export function downloadConfig(config) {

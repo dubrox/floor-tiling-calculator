@@ -1,11 +1,5 @@
 import polygonClipping from 'polygon-clipping';
-import {
-  FLOOR_BOUNDS,
-  FLOOR_CENTROID,
-  FLOOR_POINTS_CM,
-  polygonArea,
-  polygonBounds,
-} from './floorPlan.js';
+import { polygonArea, polygonBounds } from './floorPlan.js';
 
 export function defaultTiling() {
   return {
@@ -67,7 +61,8 @@ function rotatePoint(x, y, cx, cy, cos, sin) {
  * Generate tile rectangles covering `coverBounds` after rotation around floor centroid + offset.
  * Iteration happens in unrotated tile space so we only create tiles that can intersect the floor.
  */
-export function generateTileRects(tiling, coverBounds = FLOOR_BOUNDS) {
+export function generateTileRects(tiling, coverBounds, floorPlan) {
+  const bounds = coverBounds || floorPlan.bounds;
   const w = Math.max(0.01, Number(tiling.widthCm) || 0.01);
   const h = Math.max(0.01, Number(tiling.lengthCm) || 0.01);
   const gap = Math.max(0, Number(tiling.spacingCm) || 0);
@@ -79,14 +74,13 @@ export function generateTileRects(tiling, coverBounds = FLOOR_BOUNDS) {
   const sin = Math.sin(rad);
   const invCos = Math.cos(-rad);
   const invSin = Math.sin(-rad);
-  const [cx, cy] = FLOOR_CENTROID;
+  const [cx, cy] = floorPlan.centroid;
 
-  // Inverse-rotate cover bounds into tile-local space (rotation around floor centroid).
   const corners = [
-    [coverBounds.minX, coverBounds.minY],
-    [coverBounds.maxX, coverBounds.minY],
-    [coverBounds.maxX, coverBounds.maxY],
-    [coverBounds.minX, coverBounds.maxY],
+    [bounds.minX, bounds.minY],
+    [bounds.maxX, bounds.minY],
+    [bounds.maxX, bounds.maxY],
+    [bounds.minX, bounds.maxY],
   ].map(([x, y]) => rotatePoint(x, y, cx, cy, invCos, invSin));
 
   const local = polygonBounds(corners);
@@ -141,7 +135,6 @@ function clipRectsToRegion(rects, regionMp, tiling) {
     if (!clipped || !clipped.length) continue;
     const area = multipolygonArea(clipped);
     if (area < 1e-6) continue;
-    // Any visible fragment of a tile consumes that whole tile (cut leftovers unused).
     tileCount += 1;
     coveredAreaCm2 += area;
     for (const polygon of clipped) {
@@ -161,10 +154,9 @@ function clipRectsToRegion(rects, regionMp, tiling) {
   return { pieces, coveredAreaCm2, tileCount };
 }
 
-export function clipPointsToFloor(points) {
-  const clipped = intersectAreaWithFloor(points);
+export function clipPointsToFloor(points, floorPlan) {
+  const clipped = intersectAreaWithFloor(points, floorPlan);
   if (!clipped) return null;
-  // Prefer largest polygon if multipolygon
   let best = clipped[0][0];
   let bestArea = 0;
   for (const poly of clipped) {
@@ -179,8 +171,8 @@ export function clipPointsToFloor(points) {
 }
 
 /** Floor ∩ area as a multipolygon, or null if no overlap. */
-export function intersectAreaWithFloor(points) {
-  const floorMp = ringFromPoints(FLOOR_POINTS_CM);
+export function intersectAreaWithFloor(points, floorPlan) {
+  const floorMp = ringFromPoints(floorPlan.points);
   const areaMp = ringFromPoints(points);
   if (!floorMp || !areaMp) return null;
   let clipped;
@@ -193,7 +185,7 @@ export function intersectAreaWithFloor(points) {
   return clipped;
 }
 
-function multipolygonBounds(mp) {
+function multipolygonBounds(mp, fallbackBounds) {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -208,20 +200,18 @@ function multipolygonBounds(mp) {
       maxY = Math.max(maxY, y);
     }
   }
-  if (!Number.isFinite(minX)) return FLOOR_BOUNDS;
+  if (!Number.isFinite(minX)) return fallbackBounds;
   return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
 }
 
-export function computeTilingPreview(baseTiling, areas) {
-  const floorMp = ringFromPoints(FLOOR_POINTS_CM);
+export function computeTilingPreview(baseTiling, areas, floorPlan) {
+  const floorMp = ringFromPoints(floorPlan.points);
 
-  // Later areas in the list sit on top of earlier ones.
   const stacked = areas.map((area) => ({
     area,
-    floorClip: intersectAreaWithFloor(area.points),
+    floorClip: intersectAreaWithFloor(area.points, floorPlan),
   }));
 
-  // Visible region per area = (floor ∩ area) − union(areas above).
   const areaVisible = stacked.map(({ area, floorClip }, index) => {
     if (!floorClip) {
       return { area, visible: null };
@@ -243,7 +233,6 @@ export function computeTilingPreview(baseTiling, areas) {
     return { area, visible };
   });
 
-  // Base is whatever remains of the floor under all areas.
   let baseRegion = floorMp;
   for (const { floorClip } of stacked) {
     if (!floorClip) continue;
@@ -255,7 +244,7 @@ export function computeTilingPreview(baseTiling, areas) {
   }
   if (baseRegion && !baseRegion.length) baseRegion = null;
 
-  const baseRects = generateTileRects(baseTiling);
+  const baseRects = generateTileRects(baseTiling, floorPlan.bounds, floorPlan);
   const baseResult = clipRectsToRegion(baseRects, baseRegion, baseTiling);
   const baseCount = baseResult.tileCount;
 
@@ -270,8 +259,8 @@ export function computeTilingPreview(baseTiling, areas) {
         points: area.points,
       };
     }
-    const cover = multipolygonBounds(visible);
-    const rects = generateTileRects(tiling, cover);
+    const cover = multipolygonBounds(visible, floorPlan.bounds);
+    const rects = generateTileRects(tiling, cover, floorPlan);
     const result = clipRectsToRegion(rects, visible, tiling);
     return {
       id: area.id,
