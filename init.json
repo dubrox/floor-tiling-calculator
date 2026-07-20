@@ -110,8 +110,8 @@
   "baseLayerName": "Base",
   "baseLayer": {
     "tileId": "b70cc50f-92c7-42e5-bd5d-49a925c13f25",
-    "offsetXCm": 15.6,
-    "offsetYCm": 11,
+    "offsetXCm": 0,
+    "offsetYCm": 0,
     "orientationDeg": 45
   },
   "areas": [
@@ -122,14 +122,14 @@
       "points": [
         [
           -13.4,
-          0.46
+          0.45577085
         ],
         [
-          410.98,
-          0.46
+          410.98676,
+          0.45577085
         ],
         [
-          410.98,
+          410.98676,
           421.19
         ],
         [
