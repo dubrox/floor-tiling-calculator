@@ -1,11 +1,45 @@
 import htm from 'htm';
-import { createElement, useRef } from 'react';
+import { createElement, useRef, useState } from 'react';
 import { fileToTileImageDataUrl } from './storage.js';
-import { countTileUsage, formatTileSize } from './tileLibrary.js';
+import {
+  countTileUsage,
+  countTilesInLayout,
+  formatTileSize,
+} from './tileLibrary.js';
 
 const h = htm.bind(createElement);
 
 const ORIENTATION_PRESETS = [0, 45, 90];
+
+export function CollapsiblePanel({
+  title,
+  variant = 'default',
+  actions = null,
+  defaultOpen = true,
+  children,
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  return h`
+    <section
+      class=${`collapsible-panel panel-variant-${variant} ${open ? 'is-open' : 'is-collapsed'}`}
+    >
+      <header class="collapsible-panel-header">
+        <button
+          type="button"
+          class="collapsible-panel-toggle"
+          aria-expanded=${open}
+          onClick=${() => setOpen((v) => !v)}
+        >
+          <span class="collapsible-chevron" aria-hidden="true">${open ? '▾' : '▸'}</span>
+          <h2>${title}</h2>
+        </button>
+        ${actions ? h`<div class="collapsible-panel-actions">${actions}</div>` : null}
+      </header>
+      ${open ? h`<div class="collapsible-panel-body">${children}</div>` : null}
+    </section>
+  `;
+}
 
 export function TileSwatch({ tile, large = false }) {
   const aspect = Math.max(0.2, (tile.lengthCm || 1) / (tile.widthCm || 1));
@@ -139,7 +173,7 @@ export function TileDefinitionFields({ tile, onChange, onCommit, imageInputRef: 
   `;
 }
 
-export function LayerPlacementFields({ layer, tile, onChange, onCommit }) {
+export function LayerPlacementFields({ layer, tile, onChange, onCommit, onTileClick }) {
   const set = (key, value, commit = false) => {
     const next = { ...layer, [key]: value };
     onChange(next);
@@ -150,13 +184,19 @@ export function LayerPlacementFields({ layer, tile, onChange, onCommit }) {
     <div class="layer-placement-fields">
       ${tile
         ? h`
-            <div class="layer-tile-ref">
+            <button
+              type="button"
+              class="layer-tile-ref layer-tile-picker"
+              title="Change tile type"
+              onClick=${onTileClick}
+            >
               <${TileSwatch} tile=${tile} />
               <div>
                 <strong>${tile.name}</strong>
                 <div class="hint">${formatTileSize(tile)} · gap ${tile.spacingCm} cm</div>
+                <div class="hint layer-tile-picker-hint">Click to change tile</div>
               </div>
-            </div>
+            </button>
           `
         : null}
       <div class="field">
@@ -269,6 +309,7 @@ export function TilePickerPanel({
 export function TileLibraryPanel({
   library,
   config,
+  preview,
   editingTileId,
   liveTileDraft,
   disabled,
@@ -282,15 +323,18 @@ export function TileLibraryPanel({
     liveTileDraft || library.find((t) => t.id === editingTileId) || null;
 
   return h`
-    <section class="panel tile-library-panel">
-      <div class="panel-heading-row">
-        <h2>Tile library</h2>
+    <${CollapsiblePanel}
+      title="Tile library"
+      variant="library"
+      actions=${h`
         <button type="button" class="btn" disabled=${disabled} onClick=${onAddTile}>+ Add</button>
-      </div>
+      `}
+    >
       <p class="hint">Shared tile definitions. Layers only store offset and orientation.</p>
       <ul class="tile-library-list">
         ${library.map((tile) => {
-          const usage = countTileUsage(config, tile.id);
+          const layerRefs = countTileUsage(config, tile.id);
+          const tileCount = countTilesInLayout(config, preview, tile.id);
           return h`
             <li key=${tile.id}>
               <button
@@ -302,14 +346,17 @@ export function TileLibraryPanel({
                 <${TileSwatch} tile=${tile} />
                 <span class="tile-library-item-text">
                   <strong>${tile.name}</strong>
-                  <span class="hint">${formatTileSize(tile)} · used ${usage}×</span>
+                  <span class="hint">
+                    ${formatTileSize(tile)}
+                    ${tileCount ? ` · ${tileCount} tile${tileCount === 1 ? '' : 's'} in layout` : ''}
+                  </span>
                 </span>
               </button>
               <button
                 type="button"
                 class="btn danger btn-icon"
-                title=${usage ? 'In use — cannot delete' : 'Delete tile type'}
-                disabled=${disabled || usage > 0}
+                title=${layerRefs ? 'In use — cannot delete' : 'Delete tile type'}
+                disabled=${disabled || layerRefs > 0}
                 onClick=${() => onDeleteTile(tile.id)}
               >×</button>
             </li>
@@ -319,14 +366,16 @@ export function TileLibraryPanel({
 
       ${editingTile && !disabled
         ? h`
-            <h2>Edit tile</h2>
-            <${TileDefinitionFields}
-              tile=${editingTile}
-              onChange=${onDraftChange}
-              onCommit=${onCommitTile}
-            />
+            <div class="panel-subsection">
+              <h3>Edit tile</h3>
+              <${TileDefinitionFields}
+                tile=${editingTile}
+                onChange=${onDraftChange}
+                onCommit=${onCommitTile}
+              />
+            </div>
           `
         : null}
-    </section>
+    <//>
   `;
 }

@@ -23,6 +23,7 @@ export function createDefaultConfig() {
     floorPlanId: DEFAULT_FLOOR_PLAN_ID,
     floorPlan: createDefaultFloorPlanSpec(),
     tileLibrary: [defaultTile],
+    baseLayerName: 'Base',
     baseLayer: defaultLayerPlacement(defaultTile.id),
     areas: [],
   };
@@ -104,6 +105,7 @@ export function normalizeConfig(raw) {
             return {
               id: String(a.id || crypto.randomUUID()),
               kind: a.kind === 'rect' ? 'rect' : 'polygon',
+              name: typeof a.name === 'string' ? a.name.trim() : '',
               points: a.points.map(([x, y]) => [Number(x), Number(y)]),
               layer,
             };
@@ -116,11 +118,17 @@ export function normalizeConfig(raw) {
     areas = migrated.areas;
   }
 
+  const baseLayerName =
+    typeof raw.baseLayerName === 'string' && raw.baseLayerName.trim()
+      ? raw.baseLayerName.trim()
+      : base.baseLayerName;
+
   return {
     version: CONFIG_VERSION,
     floorPlanId: floorPlan.id,
     floorPlan,
     tileLibrary,
+    baseLayerName,
     baseLayer,
     areas,
   };

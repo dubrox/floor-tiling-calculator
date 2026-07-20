@@ -42,6 +42,7 @@ import {
   STORAGE_KEY,
 } from './storage.js';
 import {
+  CollapsiblePanel,
   LayerPlacementFields,
   TileLibraryPanel,
   TilePickerPanel,
@@ -51,6 +52,8 @@ import {
   defaultLayerPlacement,
   defaultTileDefinition,
   findTile,
+  getAreaLayerName,
+  getBaseLayerName,
   resolveConfigLayers,
 } from './tileLibrary.js';
 import { clipPointsToFloor, computeTilingPreview } from './tiling.js';
@@ -179,6 +182,7 @@ export function App() {
   const [liveTileDraft, setLiveTileDraft] = useState(null);
   const [tilePicker, setTilePicker] = useState(null);
   const [pickerDraftTile, setPickerDraftTile] = useState(null);
+  const [liveLayerName, setLiveLayerName] = useState('');
   const fileRef = useRef(null);
   const floorFileRef = useRef(null);
   const svgRef = useRef(null);
@@ -221,6 +225,8 @@ export function App() {
     [displayConfig, floorPlan],
   );
 
+  const selectedArea = config.areas.find((a) => a.id === selectedAreaId) || null;
+
   const selectedDisplay = useMemo(
     () => displayConfig.areas.find((a) => a.id === selectedAreaId) || null,
     [displayConfig.areas, selectedAreaId],
@@ -251,6 +257,16 @@ export function App() {
   useEffect(() => {
     setLiveAreaLayer(null);
   }, [config.areas, selectedAreaId]);
+
+  useEffect(() => {
+    if (baseSelected) {
+      setLiveLayerName(config.baseLayerName || 'Base');
+    } else if (selectedArea) {
+      setLiveLayerName(selectedArea.name || '');
+    } else {
+      setLiveLayerName('');
+    }
+  }, [baseSelected, selectedArea, config.baseLayerName, selectedArea?.name, selectedArea?.id]);
 
   useEffect(() => {
     if (!is3d) return;
@@ -338,8 +354,6 @@ export function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   });
-
-  const selectedArea = config.areas.find((a) => a.id === selectedAreaId) || null;
 
   function selectBase() {
     setSelectedId(BASE_SELECTION);
@@ -496,6 +510,29 @@ export function App() {
     setLiveTileDraft(null);
     setTilePicker(null);
     setPickerDraftTile(null);
+  }
+
+  function toggleTilePicker(target, areaId) {
+    setTilePicker((prev) => {
+      if (target === 'base') {
+        return prev?.target === 'base' ? null : { mode: 'pick', target: 'base' };
+      }
+      return prev?.target === 'change-area' && prev.areaId === areaId
+        ? null
+        : { mode: 'pick', target: 'change-area', areaId };
+    });
+  }
+
+  function renameBaseLayer(name) {
+    const trimmed = name.trim();
+    commit({ ...config, baseLayerName: trimmed || 'Base' });
+  }
+
+  function renameAreaLayer(areaId, name) {
+    commit({
+      ...config,
+      areas: config.areas.map((a) => (a.id === areaId ? { ...a, name: name.trim() } : a)),
+    });
   }
 
   function deleteSelected() {
@@ -958,8 +995,7 @@ export function App() {
 
       <div class="main">
         <aside class="sidebar">
-          <section class="panel">
-            <h2>Layers</h2>
+          <${CollapsiblePanel} title="Layers" variant="layers" defaultOpen=${true}>
             <p class="hint">
               ${is3d
                 ? '3D mode is read-only. Switch to Edit to change layers, draw areas, or resize.'
@@ -975,12 +1011,13 @@ export function App() {
                   onClick=${selectBase}
                 >
                   ${baseTile ? h`<${TileSwatch} tile=${baseTile} />` : null}
-                  <span>Base · ${preview.baseCount} tiles</span>
+                  <span>${getBaseLayerName(config)} · ${preview.baseCount} tiles</span>
                 </button>
               </li>
               ${config.areas.map(
                 (area, i) => {
                   const areaTile = findTile(config.tileLibrary, area.layer?.tileId);
+                  const areaPreview = preview.areas.find((a) => a.id === area.id);
                   const dropBefore = layerDrop?.id === area.id && !layerDrop.insertAfter;
                   const dropAfter = layerDrop?.id === area.id && layerDrop.insertAfter;
                   return h`
@@ -1014,10 +1051,8 @@ export function App() {
                     >
                       ${areaTile ? h`<${TileSwatch} tile=${areaTile} />` : null}
                       <span>
-                        ${area.kind} ${i + 1}
-                        ${preview.areas.find((a) => a.id === area.id)
-                          ? ` · ${preview.areas.find((a) => a.id === area.id).count} tiles`
-                          : ''}
+                        ${getAreaLayerName(area, i)}
+                        ${areaPreview ? ` · ${areaPreview.count} tiles` : ''}
                       </span>
                     </button>
                     <button
@@ -1042,106 +1077,123 @@ export function App() {
 
             ${!is3d && baseSelected
               ? h`
-                  <h2>Base layer</h2>
-                  <button
-                    type="button"
-                    class="btn"
-                    onClick=${() =>
-                      setTilePicker((prev) =>
-                        prev?.target === 'base' ? null : { mode: 'pick', target: 'base' },
+                  <div class="panel-subsection">
+                    <h3>Base layer</h3>
+                    <div class="field">
+                      <label>Layer name</label>
+                      <input
+                        type="text"
+                        value=${liveLayerName}
+                        onInput=${(e) => setLiveLayerName(e.target.value)}
+                        onBlur=${(e) => renameBaseLayer(e.target.value)}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      class="btn"
+                      onClick=${() => toggleTilePicker('base')}
+                    >
+                      Change tile type
+                    </button>
+                    ${tilePicker?.target === 'base'
+                      ? h`
+                          <${TilePickerPanel}
+                            title="Choose tile for base layer"
+                            library=${config.tileLibrary}
+                            mode=${tilePicker.mode}
+                            draftTile=${pickerDraftTile}
+                            onPick=${pickTileFromLibrary}
+                            onCancel=${cancelTilePicker}
+                            onStartCreate=${startPickerCreate}
+                            onDraftChange=${setPickerDraftTile}
+                            onSaveDraft=${savePickerDraftTile}
+                          />
+                        `
+                      : null}
+                    <${LayerPlacementFields}
+                      layer=${liveBaseLayer || config.baseLayer}
+                      tile=${findTile(
+                        config.tileLibrary,
+                        (liveBaseLayer || config.baseLayer).tileId,
                       )}
-                  >
-                    Change tile type
-                  </button>
-                  ${tilePicker?.target === 'base'
-                    ? h`
-                        <${TilePickerPanel}
-                          title="Choose tile for base layer"
-                          library=${config.tileLibrary}
-                          mode=${tilePicker.mode}
-                          draftTile=${pickerDraftTile}
-                          onPick=${pickTileFromLibrary}
-                          onCancel=${cancelTilePicker}
-                          onStartCreate=${startPickerCreate}
-                          onDraftChange=${setPickerDraftTile}
-                          onSaveDraft=${savePickerDraftTile}
-                        />
-                      `
-                    : null}
-                  <${LayerPlacementFields}
-                    layer=${liveBaseLayer || config.baseLayer}
-                    tile=${findTile(
-                      config.tileLibrary,
-                      (liveBaseLayer || config.baseLayer).tileId,
-                    )}
-                    onChange=${(layer) => setLiveBaseLayer(layer)}
-                    onCommit=${(layer) => {
-                      setLiveBaseLayer(null);
-                      commit({ ...config, baseLayer: layer });
-                    }}
-                  />
+                      onTileClick=${() => toggleTilePicker('base')}
+                      onChange=${(layer) => setLiveBaseLayer(layer)}
+                      onCommit=${(layer) => {
+                        setLiveBaseLayer(null);
+                        commit({ ...config, baseLayer: layer });
+                      }}
+                    />
+                  </div>
                 `
               : null}
 
             ${!is3d && selectedArea
               ? h`
-                  <h2>Area layer</h2>
-                  <button
-                    type="button"
-                    class="btn"
-                    onClick=${() =>
-                      setTilePicker((prev) =>
-                        prev?.target === 'change-area' && prev.areaId === selectedArea.id
-                          ? null
-                          : {
-                              mode: 'pick',
-                              target: 'change-area',
-                              areaId: selectedArea.id,
-                            },
+                  <div class="panel-subsection">
+                    <h3>Area layer</h3>
+                    <div class="field">
+                      <label>Layer name</label>
+                      <input
+                        type="text"
+                        value=${liveLayerName}
+                        placeholder=${getAreaLayerName(
+                          selectedArea,
+                          config.areas.findIndex((a) => a.id === selectedArea.id),
+                        )}
+                        onInput=${(e) => setLiveLayerName(e.target.value)}
+                        onBlur=${(e) => renameAreaLayer(selectedArea.id, e.target.value)}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      class="btn"
+                      onClick=${() => toggleTilePicker('change-area', selectedArea.id)}
+                    >
+                      Change tile type
+                    </button>
+                    ${tilePicker?.target === 'change-area' && tilePicker.areaId === selectedArea.id
+                      ? h`
+                          <${TilePickerPanel}
+                            title="Choose tile type"
+                            library=${config.tileLibrary}
+                            mode=${tilePicker.mode}
+                            draftTile=${pickerDraftTile}
+                            onPick=${pickTileFromLibrary}
+                            onCancel=${cancelTilePicker}
+                            onStartCreate=${startPickerCreate}
+                            onDraftChange=${setPickerDraftTile}
+                            onSaveDraft=${savePickerDraftTile}
+                          />
+                        `
+                      : null}
+                    <${LayerPlacementFields}
+                      layer=${liveAreaLayer || selectedArea.layer}
+                      tile=${findTile(
+                        config.tileLibrary,
+                        (liveAreaLayer || selectedArea.layer).tileId,
                       )}
-                  >
-                    Change tile type
-                  </button>
-                  ${tilePicker?.target === 'change-area' && tilePicker.areaId === selectedArea.id
-                    ? h`
-                        <${TilePickerPanel}
-                          title="Choose tile type"
-                          library=${config.tileLibrary}
-                          mode=${tilePicker.mode}
-                          draftTile=${pickerDraftTile}
-                          onPick=${pickTileFromLibrary}
-                          onCancel=${cancelTilePicker}
-                          onStartCreate=${startPickerCreate}
-                          onDraftChange=${setPickerDraftTile}
-                          onSaveDraft=${savePickerDraftTile}
-                        />
-                      `
-                    : null}
-                  <${LayerPlacementFields}
-                    layer=${liveAreaLayer || selectedArea.layer}
-                    tile=${findTile(
-                      config.tileLibrary,
-                      (liveAreaLayer || selectedArea.layer).tileId,
-                    )}
-                    onChange=${(layer) => setLiveAreaLayer(layer)}
-                    onCommit=${(layer) => {
-                      setLiveAreaLayer(null);
-                      commit({
-                        ...config,
-                        areas: config.areas.map((a) =>
-                          a.id === selectedArea.id ? { ...a, layer } : a,
-                        ),
-                      });
-                    }}
-                  />
-                  <button type="button" class="btn danger" onClick=${deleteSelected}>Delete area</button>
+                      onTileClick=${() => toggleTilePicker('change-area', selectedArea.id)}
+                      onChange=${(layer) => setLiveAreaLayer(layer)}
+                      onCommit=${(layer) => {
+                        setLiveAreaLayer(null);
+                        commit({
+                          ...config,
+                          areas: config.areas.map((a) =>
+                            a.id === selectedArea.id ? { ...a, layer } : a,
+                          ),
+                        });
+                      }}
+                    />
+                    <button type="button" class="btn danger" onClick=${deleteSelected}>Delete area</button>
+                  </div>
                 `
               : null}
-          </section>
+          <//>
 
           <${TileLibraryPanel}
             library=${config.tileLibrary}
             config=${config}
+            preview=${preview}
             editingTileId=${editingTileId}
             liveTileDraft=${liveTileDraft}
             disabled=${is3d}

@@ -187,6 +187,31 @@ export function countTileUsage(config, tileId) {
   return count;
 }
 
+/** Total physical tiles of this type across all layers in the current layout. */
+export function countTilesInLayout(config, preview, tileId) {
+  let count = 0;
+  if (config.baseLayer?.tileId === tileId) {
+    count += preview?.baseCount ?? 0;
+  }
+  for (const area of config.areas || []) {
+    if (area.layer?.tileId === tileId) {
+      const areaPreview = preview?.areas?.find((a) => a.id === area.id);
+      count += areaPreview?.count ?? 0;
+    }
+  }
+  return count;
+}
+
+export function getBaseLayerName(config) {
+  const name = (config.baseLayerName || '').trim();
+  return name || 'Base';
+}
+
+export function getAreaLayerName(area, index) {
+  const name = (area.name || '').trim();
+  return name || `${area.kind} ${index + 1}`;
+}
+
 export function formatTileSize(tile) {
   return `${tile.widthCm}×${tile.lengthCm} cm`;
 }
