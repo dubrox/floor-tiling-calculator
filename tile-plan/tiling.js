@@ -36,7 +36,33 @@ function ringFromPoints(points) {
   const [fx, fy] = ring[0];
   const [lx, ly] = ring[ring.length - 1];
   if (fx !== lx || fy !== ly) ring.push([fx, fy]);
-  return [ring];
+  // GeoJSON MultiPolygon: [ Polygon ]; Polygon: [ Ring ]
+  return [[ring]];
+}
+
+function multipolygonAabb(mp) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  if (!Array.isArray(mp)) return null;
+  for (const polygon of mp) {
+    if (!Array.isArray(polygon) || !polygon.length) continue;
+    const outer = polygon[0];
+    // Skip malformed rings (e.g. a bare [x,y] coordinate mistaken for a polygon).
+    if (!Array.isArray(outer) || outer.length < 1 || !Array.isArray(outer[0])) continue;
+    for (const pt of outer) {
+      if (!Array.isArray(pt) || pt.length < 2) continue;
+      const x = pt[0];
+      const y = pt[1];
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (!Number.isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY };
 }
 
 function multipolygonArea(mp) {
@@ -179,25 +205,6 @@ function pointInMultipolygon(x, y, mp) {
     if (!inHole) return true;
   }
   return false;
-}
-
-function multipolygonAabb(mp) {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const polygon of mp) {
-    const outer = polygon[0];
-    if (!outer) continue;
-    for (const [x, y] of outer) {
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-    }
-  }
-  if (!Number.isFinite(minX)) return null;
-  return { minX, minY, maxX, maxY };
 }
 
 function clipRectsToRegion(rects, regionMp, tiling) {
