@@ -127,6 +127,79 @@ export function generateTileRects(tiling, coverBounds, floorPlan, origin = null)
   return rects;
 }
 
+function aabbFromPointsLocal(points) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of points) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function aabbsOverlap(a, b) {
+  return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
+}
+
+/** Ray-cast point-in-ring. Ring may be open or closed. */
+function pointInRing(x, y, ring) {
+  const n = ring.length;
+  if (n < 3) return false;
+  const last = ring[n - 1];
+  const closed = last[0] === ring[0][0] && last[1] === ring[0][1];
+  const count = closed ? n - 1 : n;
+  let inside = false;
+  for (let i = 0, j = count - 1; i < count; j = i++) {
+    const xi = ring[i][0];
+    const yi = ring[i][1];
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 0) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function pointInMultipolygon(x, y, mp) {
+  for (const polygon of mp) {
+    const outer = polygon[0];
+    if (!outer || !pointInRing(x, y, outer)) continue;
+    let inHole = false;
+    for (let i = 1; i < polygon.length; i++) {
+      if (pointInRing(x, y, polygon[i])) {
+        inHole = true;
+        break;
+      }
+    }
+    if (!inHole) return true;
+  }
+  return false;
+}
+
+function multipolygonAabb(mp) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const polygon of mp) {
+    const outer = polygon[0];
+    if (!outer) continue;
+    for (const [x, y] of outer) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (!Number.isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY };
+}
+
 function clipRectsToRegion(rects, regionMp, tiling) {
   if (!regionMp || !regionMp.length) {
     return { pieces: [], coveredAreaCm2: 0, tileCount: 0 };
@@ -139,8 +212,36 @@ function clipRectsToRegion(rects, regionMp, tiling) {
   const imageDataUrl = tiling.imageDataUrl || null;
   const widthCm = Math.max(0.01, Number(tiling.widthCm) || 0.01);
   const lengthCm = Math.max(0.01, Number(tiling.lengthCm) || 0.01);
+  const regionAabb = multipolygonAabb(regionMp);
+  if (!regionAabb) {
+    return { pieces, coveredAreaCm2, tileCount };
+  }
+
+  const pushFullRect = (rect) => {
+    tileCount += 1;
+    coveredAreaCm2 += widthCm * lengthCm;
+    pieces.push({
+      points: rect,
+      color,
+      imageDataUrl,
+      tileCorners: rect,
+      widthCm,
+      lengthCm,
+    });
+  };
 
   for (const rect of rects) {
+    const rectAabb = aabbFromPointsLocal(rect);
+    if (!aabbsOverlap(rectAabb, regionAabb)) continue;
+
+    // Fast path: all corners inside a simple (no-hole) region → skip clip.
+    // Unsafe for holes (tile may cover a void) or strongly concave notches.
+    const simpleRegion = regionMp.length === 1 && regionMp[0].length === 1;
+    if (simpleRegion && rect.every(([x, y]) => pointInMultipolygon(x, y, regionMp))) {
+      pushFullRect(rect);
+      continue;
+    }
+
     const rectMp = ringFromPoints(rect);
     if (!rectMp) continue;
     let clipped;

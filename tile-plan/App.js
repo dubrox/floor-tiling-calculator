@@ -1,5 +1,14 @@
 import htm from 'htm';
-import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  createElement,
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   buildFloorPlan,
   parseSweetHome3dFile,
@@ -67,13 +76,12 @@ const ZOOM_STEP = 0.12;
 /** 1 mm in app units (cm). */
 const NUDGE_CM = 0.1;
 
+function cameraTransformCss(camera) {
+  return `rotateX(${camera.pitchDeg}deg) rotateZ(${camera.yawDeg}deg) scale(${camera.zoom})`;
+}
+
 function cameraTransformStyle(camera) {
-  const yaw = camera.yawDeg;
-  const pitch = camera.pitchDeg;
-  const zoom = camera.zoom;
-  return {
-    transform: `rotateX(${pitch}deg) rotateZ(${yaw}deg) scale(${zoom})`,
-  };
+  return { transform: cameraTransformCss(camera) };
 }
 
 function isTypingTarget(el) {
@@ -83,7 +91,7 @@ function isTypingTarget(el) {
 }
 
 /** Map image onto the full tile quad; clip to the visible piece. */
-function TilePiece({ piece, id }) {
+const TilePiece = memo(function TilePiece({ piece, id }) {
   const pathD = pointsToPath(piece.points);
   const style = { pointerEvents: 'none' };
 
@@ -129,7 +137,31 @@ function TilePiece({ piece, id }) {
       </g>
     </g>
   `;
-}
+});
+
+/** Isolates tile SVG from App re-renders (camera, menus, live form fields). */
+const TilePreviewLayer = memo(function TilePreviewLayer({ preview }) {
+  return h`
+    <g clip-path="url(#floor-clip)">
+      ${preview.basePieces.map(
+        (piece, i) => h`
+          <${TilePiece} key=${`b-${i}`} id=${`b-${i}`} piece=${piece} />
+        `,
+      )}
+      ${preview.areas.map((area) =>
+        area.pieces.map(
+          (piece, i) => h`
+            <${TilePiece}
+              key=${`${area.id}-${i}`}
+              id=${`${area.id}-${i}`}
+              piece=${piece}
+            />
+          `,
+        ),
+      )}
+    </g>
+  `;
+});
 
 function svgPoint(svg, clientX, clientY) {
   const pt = svg.createSVGPoint();
@@ -229,6 +261,8 @@ export function App() {
   const dragRef = useRef(null);
   const layerDragRef = useRef(null);
   const orbitRef = useRef(null);
+  const cameraRef = useRef(camera);
+  const cameraSaveTimerRef = useRef(null);
   const is3d = viewMode === '3d';
 
   const selectedAreaId = selectedId && selectedId !== BASE_SELECTION ? selectedId : null;
@@ -259,9 +293,16 @@ export function App() {
     [config, resolvedLayers, liveAreas],
   );
 
+  // Defer expensive tile recompute while dragging/editing so the UI stays responsive.
+  const deferredDisplayConfig = useDeferredValue(displayConfig);
   const preview = useMemo(
-    () => computeTilingPreview(displayConfig.baseTiling, displayConfig.areas, floorPlan),
-    [displayConfig, floorPlan],
+    () =>
+      computeTilingPreview(
+        deferredDisplayConfig.baseTiling,
+        deferredDisplayConfig.areas,
+        floorPlan,
+      ),
+    [deferredDisplayConfig, floorPlan],
   );
 
   const selectedArea = config.areas.find((a) => a.id === selectedAreaId) || null;
@@ -286,8 +327,23 @@ export function App() {
   }, [config]);
 
   useEffect(() => {
-    saveCamera(camera);
-  }, [camera]);
+    cameraRef.current = camera;
+    const el = stageRef.current;
+    if (!el) return;
+    if (is3d) {
+      el.style.transform = cameraTransformCss(camera);
+    } else {
+      el.style.transform = '';
+    }
+  }, [camera, is3d]);
+
+  useEffect(() => {
+    return () => {
+      if (cameraSaveTimerRef.current) {
+        clearTimeout(cameraSaveTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setLiveBaseLayer(null);
@@ -346,26 +402,60 @@ export function App() {
     layerDragRef.current = null;
   }, [is3d]);
 
+  const applyCameraDom = useCallback((cam) => {
+    cameraRef.current = cam;
+    const el = stageRef.current;
+    if (el) el.style.transform = cameraTransformCss(cam);
+  }, []);
+
+  const commitCamera = useCallback((cam, { debounceMs = 0 } = {}) => {
+    if (cam) cameraRef.current = cam;
+    if (cameraSaveTimerRef.current) {
+      clearTimeout(cameraSaveTimerRef.current);
+      cameraSaveTimerRef.current = null;
+    }
+    const flush = () => {
+      cameraSaveTimerRef.current = null;
+      const latest = cameraRef.current;
+      setCamera(latest);
+      saveCamera(latest);
+    };
+    if (debounceMs > 0) {
+      cameraSaveTimerRef.current = setTimeout(flush, debounceMs);
+    } else {
+      flush();
+    }
+  }, []);
+
   useEffect(() => {
     const el = stageRef.current;
     if (!el || !is3d) return undefined;
     const onWheelNative = (e) => {
       e.preventDefault();
       const delta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
-      setCamera((cam) => normalizeCamera({ ...cam, zoom: cam.zoom + delta }));
+      const next = normalizeCamera({
+        ...cameraRef.current,
+        zoom: cameraRef.current.zoom + delta,
+      });
+      applyCameraDom(next);
+      commitCamera(next, { debounceMs: 120 });
     };
     el.addEventListener('wheel', onWheelNative, { passive: false });
     return () => el.removeEventListener('wheel', onWheelNative);
-  }, [is3d]);
+  }, [is3d, applyCameraDom, commitCamera]);
 
-  const updateCamera = useCallback((patch) => {
-    setCamera((prev) =>
-      normalizeCamera({
+  const updateCamera = useCallback(
+    (patch) => {
+      const prev = cameraRef.current;
+      const next = normalizeCamera({
         ...prev,
         ...(typeof patch === 'function' ? patch(prev) : patch),
-      }),
-    );
-  }, []);
+      });
+      applyCameraDom(next);
+      commitCamera(next);
+    },
+    [applyCameraDom, commitCamera],
+  );
 
   const commit = useCallback((next) => {
     setHistory((h) => pushHistory(h, next));
@@ -902,11 +992,14 @@ export function App() {
       const dy = e.clientY - orbitRef.current.lastY;
       orbitRef.current.lastX = e.clientX;
       orbitRef.current.lastY = e.clientY;
-      updateCamera((cam) => ({
-        yawDeg: cam.yawDeg + dx * 0.35,
-        pitchDeg: cam.pitchDeg - dy * 0.25,
-        zoom: cam.zoom,
-      }));
+      const cam = cameraRef.current;
+      applyCameraDom(
+        normalizeCamera({
+          yawDeg: cam.yawDeg + dx * 0.35,
+          pitchDeg: cam.pitchDeg - dy * 0.25,
+          zoom: cam.zoom,
+        }),
+      );
       return;
     }
 
@@ -945,6 +1038,7 @@ export function App() {
     if (orbitRef.current) {
       orbitRef.current = null;
       setOrbiting(false);
+      commitCamera(cameraRef.current);
       return;
     }
 
@@ -990,7 +1084,9 @@ export function App() {
   }
 
   function resetCamera() {
-    setCamera(createDefaultCamera());
+    const next = createDefaultCamera();
+    applyCameraDom(next);
+    commitCamera(next);
   }
 
   async function onImportFile(e) {
@@ -1415,25 +1511,7 @@ export function App() {
                 </clipPath>
               </defs>
 
-              <g clip-path="url(#floor-clip)">
-                ${preview.basePieces.map(
-                  (piece, i) => h`
-                    <${TilePiece} key=${`b-${i}`} id=${`b-${i}`} piece=${piece} />
-                  `,
-                )}
-
-                ${preview.areas.map((area) =>
-                  area.pieces.map(
-                    (piece, i) => h`
-                      <${TilePiece}
-                        key=${`${area.id}-${i}`}
-                        id=${`${area.id}-${i}`}
-                        piece=${piece}
-                      />
-                    `,
-                  ),
-                )}
-              </g>
+              <${TilePreviewLayer} preview=${preview} />
 
               ${!is3d
                 ? [SNAP_SOURCE.UNDERLYING, SNAP_SOURCE.INNER, SNAP_SOURCE.GEOMETRY].flatMap(
