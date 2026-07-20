@@ -25,6 +25,7 @@ html,
 body {
   margin: 0;
   height: 100%;
+  overflow: hidden;
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
@@ -33,12 +34,15 @@ body {
 
 #root {
   height: 100%;
+  overflow: hidden;
 }
 
 .app {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .toolbar {
@@ -128,18 +132,84 @@ body {
 
 .main {
   display: grid;
-  grid-template-columns: 300px 1fr;
+  grid-template-columns: 300px minmax(0, 1fr);
   min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .sidebar {
-  overflow: auto;
+  min-height: 0;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: #141414;
   border-right: 1px solid var(--panel-border);
   padding: 0.75rem;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  align-content: flex-start;
+}
+
+.sidebar > * {
+  flex: 0 0 auto;
+}
+
+.menu-anchor {
+  position: relative;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  z-index: 30;
+  min-width: 10rem;
+  padding: 0.25rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #1e1e1e;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.dropdown-menu-right {
+  left: auto;
+  right: 0;
+}
+
+.dropdown-item {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dropdown-item:hover:not(:disabled) {
+  background: rgba(74, 158, 255, 0.12);
+  color: #fff;
+}
+
+.dropdown-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.dropdown-item.danger {
+  color: #ffb0b0;
+}
+
+.dropdown-item.danger:hover:not(:disabled) {
+  background: rgba(224, 85, 85, 0.15);
 }
 
 .panel {
@@ -690,29 +760,6 @@ body {
   gap: 0.5rem;
   padding: 0.35rem 0;
   margin-bottom: 0.25rem;
-}
-
-button.layer-tile-ref.layer-tile-picker {
-  appearance: none;
-  width: 100%;
-  text-align: left;
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
-  color: inherit;
-  font: inherit;
-  padding: 0.45rem 0.5rem;
-  cursor: pointer;
-}
-
-button.layer-tile-ref.layer-tile-picker:hover {
-  border-color: var(--accent);
-  background: rgba(74, 158, 255, 0.08);
-}
-
-.layer-tile-picker-hint {
-  color: var(--accent);
-  font-size: 0.75rem;
 }
 
 .swatch-row {

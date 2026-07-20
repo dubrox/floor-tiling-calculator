@@ -42,10 +42,10 @@ import {
   STORAGE_KEY,
 } from './storage.js';
 import {
+  AreaGeometryFields,
   CollapsiblePanel,
   LayerPlacementFields,
   TileLibraryPanel,
-  TilePickerPanel,
   TileSwatch,
 } from './libraryUi.js';
 import {
@@ -64,6 +64,8 @@ const BASE_SELECTION = 'base';
 const PITCH_STEP = 5;
 const YAW_STEP = 10;
 const ZOOM_STEP = 0.12;
+/** 1 mm in app units (cm). */
+const NUDGE_CM = 0.1;
 
 function cameraTransformStyle(camera) {
   const yaw = camera.yawDeg;
@@ -144,6 +146,42 @@ function mergeLiveAreas(areas, liveAreas) {
   return areas.map((a) => (liveAreas[a.id] ? { ...a, points: liveAreas[a.id] } : a));
 }
 
+function roundCm(n) {
+  return Math.round(Number(n) * 100) / 100;
+}
+
+function boundsFromPoints(points) {
+  const aabb = aabbFromPoints(points);
+  return {
+    x: roundCm(aabb.minX),
+    y: roundCm(aabb.minY),
+    width: roundCm(aabb.maxX - aabb.minX),
+    height: roundCm(aabb.maxY - aabb.minY),
+  };
+}
+
+function pointsFromAreaBounds(area, currentPoints, bounds) {
+  const width = Math.max(0.1, Number(bounds.width) || 0.1);
+  const height = Math.max(0.1, Number(bounds.height) || 0.1);
+  const minX = Number(bounds.x);
+  const minY = Number(bounds.y);
+  if (area.kind === 'rect') {
+    return rectPointsFromAabb({
+      minX,
+      minY,
+      maxX: minX + width,
+      maxY: minY + height,
+    });
+  }
+  const old = aabbFromPoints(currentPoints);
+  const oldW = Math.max(1e-9, old.maxX - old.minX);
+  const oldH = Math.max(1e-9, old.maxY - old.minY);
+  return currentPoints.map(([x, y]) => [
+    minX + ((x - old.minX) / oldW) * width,
+    minY + ((y - old.minY) / oldH) * height,
+  ]);
+}
+
 function reorderAreas(areas, dragId, targetId, insertAfter) {
   if (dragId === targetId) return areas;
   const from = areas.findIndex((a) => a.id === dragId);
@@ -167,7 +205,7 @@ export function App() {
   const config = history.present;
   const [tool, setTool] = useState('select');
   /** null | 'base' | area uuid */
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(BASE_SELECTION);
   const [draft, setDraft] = useState(null);
   const [liveBaseLayer, setLiveBaseLayer] = useState(null);
   const [liveAreaLayer, setLiveAreaLayer] = useState(null);
@@ -180,9 +218,10 @@ export function App() {
   const [layerDrop, setLayerDrop] = useState(null);
   const [editingTileId, setEditingTileId] = useState(null);
   const [liveTileDraft, setLiveTileDraft] = useState(null);
-  const [tilePicker, setTilePicker] = useState(null);
-  const [pickerDraftTile, setPickerDraftTile] = useState(null);
+  const [saveMenuOpen, setSaveMenuOpen] = useState(false);
+  const [addLayerMenuOpen, setAddLayerMenuOpen] = useState(false);
   const [liveLayerName, setLiveLayerName] = useState('');
+  const [liveBounds, setLiveBounds] = useState(null);
   const fileRef = useRef(null);
   const floorFileRef = useRef(null);
   const svgRef = useRef(null);
@@ -259,6 +298,15 @@ export function App() {
   }, [config.areas, selectedAreaId]);
 
   useEffect(() => {
+    if (liveTileDraft) return;
+    if (baseSelected) {
+      setEditingTileId(config.baseLayer.tileId);
+    } else if (selectedArea) {
+      setEditingTileId(selectedArea.layer?.tileId ?? null);
+    }
+  }, [baseSelected, selectedArea?.id, selectedArea?.layer?.tileId, config.baseLayer.tileId, liveTileDraft]);
+
+  useEffect(() => {
     if (baseSelected) {
       setLiveLayerName(config.baseLayerName || 'Base');
     } else if (selectedArea) {
@@ -267,6 +315,24 @@ export function App() {
       setLiveLayerName('');
     }
   }, [baseSelected, selectedArea, config.baseLayerName, selectedArea?.name, selectedArea?.id]);
+
+  useEffect(() => {
+    if (!selectedArea) {
+      setLiveBounds(null);
+      return;
+    }
+    setLiveBounds(boundsFromPoints(selectedArea.points));
+  }, [selectedAreaId, selectedArea?.points]);
+
+  useEffect(() => {
+    if (!saveMenuOpen && !addLayerMenuOpen) return undefined;
+    const closeMenus = () => {
+      setSaveMenuOpen(false);
+      setAddLayerMenuOpen(false);
+    };
+    window.addEventListener('click', closeMenus);
+    return () => window.removeEventListener('click', closeMenus);
+  }, [saveMenuOpen, addLayerMenuOpen]);
 
   useEffect(() => {
     if (!is3d) return;
@@ -324,19 +390,13 @@ export function App() {
         e.preventDefault();
         redo();
       } else if (e.key === 'Escape') {
-        if (tilePicker) {
-          if (tilePicker.mode === 'create') {
-            setTilePicker((prev) => (prev ? { ...prev, mode: 'pick' } : null));
-            setPickerDraftTile(null);
-          } else {
-            closeTilePicker();
-          }
-          return;
-        }
+        setSaveMenuOpen(false);
+        setAddLayerMenuOpen(false);
         setDraft(null);
         setLiveAreas(null);
         setSnapGuides(emptySnapGuides());
         dragRef.current = null;
+        setTool('select');
       } else if (e.key === 'Enter' && draft?.kind === 'polygon' && draft.points.length >= 3) {
         e.preventDefault();
         finishPolygon(draft.points);
@@ -349,6 +409,33 @@ export function App() {
       ) {
         e.preventDefault();
         deleteSelected();
+      } else if (
+        !is3d &&
+        tool === 'select' &&
+        !dragRef.current &&
+        (baseSelected || selectedAreaId) &&
+        (e.key === 'ArrowUp' ||
+          e.key === 'ArrowDown' ||
+          e.key === 'ArrowLeft' ||
+          e.key === 'ArrowRight')
+      ) {
+        e.preventDefault();
+        const dx = e.key === 'ArrowLeft' ? -NUDGE_CM : e.key === 'ArrowRight' ? NUDGE_CM : 0;
+        const dy = e.key === 'ArrowUp' ? -NUDGE_CM : e.key === 'ArrowDown' ? NUDGE_CM : 0;
+        if (mod) {
+          nudgeSelectedLayerOffset(dx, dy);
+        } else {
+          nudgeSelectedLayerGeometry(dx, dy);
+        }
+      } else if (
+        !is3d &&
+        tool === 'select' &&
+        !dragRef.current &&
+        (baseSelected || selectedAreaId) &&
+        (e.key === 'PageUp' || e.key === 'PageDown')
+      ) {
+        e.preventDefault();
+        nudgeSelectedTileSpacing(e.key === 'PageUp' ? NUDGE_CM : -NUDGE_CM);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -415,20 +502,6 @@ export function App() {
     setTool('select');
   }
 
-  function closeTilePicker() {
-    setTilePicker(null);
-    setPickerDraftTile(null);
-  }
-
-  function cancelTilePicker() {
-    if (tilePicker?.mode === 'create') {
-      setTilePicker((prev) => (prev ? { ...prev, mode: 'pick' } : null));
-      setPickerDraftTile(null);
-      return;
-    }
-    closeTilePicker();
-  }
-
   function layerWithTileId(existingLayer, tileId) {
     return {
       tileId,
@@ -438,41 +511,34 @@ export function App() {
     };
   }
 
-  function applyTileSelection(tileId, libraryOverride) {
-    if (!tilePicker) return;
-    const library = libraryOverride || config.tileLibrary;
-
-    if (tilePicker.target === 'base') {
-      commit({
-        ...config,
-        tileLibrary: library,
-        baseLayer: layerWithTileId(config.baseLayer, tileId),
-      });
-    } else if (tilePicker.target === 'change-area') {
-      commit({
-        ...config,
-        tileLibrary: library,
-        areas: config.areas.map((a) =>
-          a.id === tilePicker.areaId ? { ...a, layer: layerWithTileId(a.layer, tileId) } : a,
-        ),
-      });
+  function configWithTileAssigned(cfg, tileId) {
+    if (baseSelected) {
+      return { ...cfg, baseLayer: layerWithTileId(cfg.baseLayer, tileId) };
     }
-    closeTilePicker();
+    if (selectedArea) {
+      return {
+        ...cfg,
+        areas: cfg.areas.map((a) =>
+          a.id === selectedArea.id ? { ...a, layer: layerWithTileId(a.layer, tileId) } : a,
+        ),
+      };
+    }
+    return cfg;
   }
 
-  function pickTileFromLibrary(tileId) {
-    applyTileSelection(tileId);
+  function assignTileToCurrentLayer(tileId) {
+    if (is3d) return;
+    setEditingTileId(tileId);
+    setLiveTileDraft(null);
+    if (baseSelected || selectedArea) {
+      commit(configWithTileAssigned(config, tileId));
+    }
   }
 
-  function startPickerCreate() {
-    setPickerDraftTile(defaultTileDefinition(`Tile ${config.tileLibrary.length + 1}`));
-    setTilePicker((prev) => (prev ? { ...prev, mode: 'create' } : prev));
-  }
-
-  function savePickerDraftTile() {
-    if (!pickerDraftTile || !tilePicker) return;
-    const tile = { ...pickerDraftTile, id: pickerDraftTile.id || crypto.randomUUID() };
-    applyTileSelection(tile.id, [...config.tileLibrary, tile]);
+  function startAddLayer(kind) {
+    setAddLayerMenuOpen(false);
+    setTool(kind);
+    setDraft(null);
   }
 
   function commitTileLibraryEdit(tile) {
@@ -501,26 +567,13 @@ export function App() {
     const initConfig = await loadInitJson();
     setHistory(createHistory(initConfig ?? createDefaultConfig()));
     setCamera(normalizeCamera(createDefaultCamera()));
-    clearSelection();
+    selectBase();
     setTool('select');
     setDraft(null);
     setLiveAreas(null);
     setSnapGuides(emptySnapGuides());
     setEditingTileId(null);
     setLiveTileDraft(null);
-    setTilePicker(null);
-    setPickerDraftTile(null);
-  }
-
-  function toggleTilePicker(target, areaId) {
-    setTilePicker((prev) => {
-      if (target === 'base') {
-        return prev?.target === 'base' ? null : { mode: 'pick', target: 'base' };
-      }
-      return prev?.target === 'change-area' && prev.areaId === areaId
-        ? null
-        : { mode: 'pick', target: 'change-area', areaId };
-    });
   }
 
   function renameBaseLayer(name) {
@@ -538,7 +591,7 @@ export function App() {
   function deleteSelected() {
     if (!selectedAreaId) return;
     commit({ ...config, areas: config.areas.filter((a) => a.id !== selectedAreaId) });
-    clearSelection();
+    selectBase();
   }
 
   function startLayerDrag(e, areaId) {
@@ -582,6 +635,77 @@ export function App() {
       areas: reorderAreas(config.areas, dragId, targetId, insertAfter),
     });
     endLayerDrag();
+  }
+
+  function nudgeSelectedLayerGeometry(dx, dy) {
+    if (!selectedAreaId) return;
+    const area = config.areas.find((a) => a.id === selectedAreaId);
+    if (!area) return;
+    commitAreaPoints(selectedAreaId, translatePoints(area.points, dx, dy));
+  }
+
+  function nudgeSelectedLayerOffset(dx, dy) {
+    const roundMm = (n) => Math.round(Number(n) * 1000) / 1000;
+    if (baseSelected) {
+      const layer = liveBaseLayer || config.baseLayer;
+      setLiveBaseLayer(null);
+      commit({
+        ...config,
+        baseLayer: {
+          ...layer,
+          offsetXCm: roundMm(Number(layer.offsetXCm) + dx),
+          offsetYCm: roundMm(Number(layer.offsetYCm) + dy),
+        },
+      });
+      return;
+    }
+    if (!selectedArea) return;
+    const layer = liveAreaLayer || selectedArea.layer;
+    setLiveAreaLayer(null);
+    commit({
+      ...config,
+      areas: config.areas.map((a) =>
+        a.id === selectedArea.id
+          ? {
+              ...a,
+              layer: {
+                ...layer,
+                offsetXCm: roundMm(Number(layer.offsetXCm) + dx),
+                offsetYCm: roundMm(Number(layer.offsetYCm) + dy),
+              },
+            }
+          : a,
+      ),
+    });
+  }
+
+  function nudgeSelectedTileSpacing(deltaCm) {
+    const tileId = baseSelected
+      ? config.baseLayer.tileId
+      : selectedArea?.layer?.tileId;
+    if (!tileId) return;
+    const tile = findTile(config.tileLibrary, tileId);
+    if (!tile) return;
+    const spacingCm = Math.max(0, Math.round((Number(tile.spacingCm) + deltaCm) * 1000) / 1000);
+    commit({
+      ...config,
+      tileLibrary: config.tileLibrary.map((t) => (t.id === tileId ? { ...t, spacingCm } : t)),
+    });
+    if (liveTileDraft?.id === tileId) {
+      setLiveTileDraft({ ...liveTileDraft, spacingCm });
+    }
+  }
+
+  function applySelectedAreaBounds(bounds, commitNow = false) {
+    if (!selectedArea) return;
+    setLiveBounds(bounds);
+    const sourcePoints = liveAreas?.[selectedArea.id] || selectedArea.points;
+    const points = pointsFromAreaBounds(selectedArea, sourcePoints, bounds);
+    if (commitNow) {
+      commitAreaPoints(selectedArea.id, points);
+    } else {
+      setLiveAreas({ [selectedArea.id]: points });
+    }
   }
 
   function commitAreaPoints(areaId, points) {
@@ -849,7 +973,7 @@ export function App() {
     try {
       const imported = await parseImportedFile(file);
       commit(imported);
-      clearSelection();
+      selectBase();
       setTool('select');
     } catch (err) {
       alert(`Could not import JSON: ${err.message || err}`);
@@ -874,7 +998,7 @@ export function App() {
         floorPlan: spec,
         areas: [],
       });
-      clearSelection();
+      selectBase();
       setDraft(null);
       setTool('select');
     } catch (err) {
@@ -930,42 +1054,56 @@ export function App() {
           >3D</button>
         </div>
         <div class="toolbar-group">
-          <button
-            type="button"
-            class=${`btn ${tool === 'select' ? 'active' : ''}`}
-            disabled=${is3d}
-            onClick=${() => {
-              setTool('select');
-              setDraft(null);
-            }}
-          >Select</button>
-          <button
-            type="button"
-            class=${`btn ${tool === 'rect' ? 'active' : ''}`}
-            disabled=${is3d}
-            onClick=${() => {
-              setTool('rect');
-              setDraft(null);
-            }}
-          >Rect</button>
-          <button
-            type="button"
-            class=${`btn ${tool === 'polygon' ? 'active' : ''}`}
-            disabled=${is3d}
-            onClick=${() => {
-              setTool('polygon');
-              setDraft(null);
-            }}
-          >Polygon</button>
-        </div>
-        <div class="toolbar-group">
-          <button
-            type="button"
-            class="btn"
-            disabled=${is3d}
-            title="Load floor outline from Sweet Home 3D Home.xml"
-            onClick=${() => floorFileRef.current?.click()}
-          >Load floor XML</button>
+          <div class="menu-anchor">
+            <button
+              type="button"
+              class=${`btn ${saveMenuOpen ? 'active' : ''}`}
+              onClick=${(e) => {
+                e.stopPropagation();
+                setSaveMenuOpen((open) => !open);
+              }}
+            >Save ▾</button>
+            ${saveMenuOpen
+              ? h`
+                  <div class="dropdown-menu">
+                    <button
+                      type="button"
+                      class="dropdown-item"
+                      onClick=${() => {
+                        setSaveMenuOpen(false);
+                        downloadConfig(config);
+                      }}
+                    >Export JSON</button>
+                    <button
+                      type="button"
+                      class="dropdown-item"
+                      disabled=${is3d}
+                      onClick=${() => {
+                        setSaveMenuOpen(false);
+                        fileRef.current?.click();
+                      }}
+                    >Import JSON</button>
+                    <button
+                      type="button"
+                      class="dropdown-item"
+                      disabled=${is3d}
+                      onClick=${() => {
+                        setSaveMenuOpen(false);
+                        floorFileRef.current?.click();
+                      }}
+                    >Load floor XML</button>
+                    <button
+                      type="button"
+                      class="dropdown-item danger"
+                      onClick=${() => {
+                        setSaveMenuOpen(false);
+                        resetToInit();
+                      }}
+                    >Reset to init.json</button>
+                  </div>
+                `
+              : null}
+          </div>
           <input
             ref=${floorFileRef}
             type="file"
@@ -973,9 +1111,6 @@ export function App() {
             hidden
             onChange=${onImportFloorFile}
           />
-          <button type="button" class="btn" onClick=${() => downloadConfig(config)}>Export JSON</button>
-          <button type="button" class="btn" onClick=${() => fileRef.current?.click()}>Import JSON</button>
-          <button type="button" class="btn danger" title="Clear saved data and reload from init.json" onClick=${resetToInit}>Reset</button>
           <input
             ref=${fileRef}
             type="file"
@@ -995,13 +1130,50 @@ export function App() {
 
       <div class="main">
         <aside class="sidebar">
-          <${CollapsiblePanel} title="Layers" variant="layers" defaultOpen=${true}>
+          <${CollapsiblePanel}
+            title="Layers"
+            variant="layers"
+            defaultOpen=${true}
+            actions=${!is3d
+              ? h`
+                  <div class="menu-anchor">
+                    <button
+                      type="button"
+                      class=${`btn ${addLayerMenuOpen ? 'active' : ''}`}
+                      onClick=${(e) => {
+                        e.stopPropagation();
+                        setAddLayerMenuOpen((open) => !open);
+                      }}
+                    >+ Add</button>
+                    ${addLayerMenuOpen
+                      ? h`
+                          <div class="dropdown-menu dropdown-menu-right">
+                            <button
+                              type="button"
+                              class="dropdown-item"
+                              onClick=${() => startAddLayer('rect')}
+                            >Rectangle</button>
+                            <button
+                              type="button"
+                              class="dropdown-item"
+                              onClick=${() => startAddLayer('polygon')}
+                            >Polygon</button>
+                          </div>
+                        `
+                      : null}
+                  </div>
+                `
+              : null}
+          >
             <p class="hint">
               ${is3d
                 ? '3D mode is read-only. Switch to Edit to change layers, draw areas, or resize.'
-                : h`New areas start with the base tile. Drag the
-              <span class="layer-drag-handle inline">⋮⋮</span> grip to reorder stacking.
-              Later areas sit on top. Each layer keeps its own tile, offset, and orientation.`}
+                : tool === 'rect'
+                  ? 'Draw a rectangle on the canvas. Esc cancels.'
+                  : tool === 'polygon'
+                    ? 'Click points on the canvas. Enter or double-click to finish. Esc cancels.'
+                    : h`Select a layer, then pick a tile from the library. Drag the
+              <span class="layer-drag-handle inline">⋮⋮</span> grip to reorder stacking.`}
             </p>
             <ul class="area-list">
               <li>
@@ -1066,7 +1238,7 @@ export function App() {
                           ...config,
                           areas: config.areas.filter((a) => a.id !== area.id),
                         });
-                        if (selectedAreaId === area.id) clearSelection();
+                        if (selectedAreaId === area.id) selectBase();
                       }}
                     >×</button>
                   </li>
@@ -1088,35 +1260,12 @@ export function App() {
                         onBlur=${(e) => renameBaseLayer(e.target.value)}
                       />
                     </div>
-                    <button
-                      type="button"
-                      class="btn"
-                      onClick=${() => toggleTilePicker('base')}
-                    >
-                      Change tile type
-                    </button>
-                    ${tilePicker?.target === 'base'
-                      ? h`
-                          <${TilePickerPanel}
-                            title="Choose tile for base layer"
-                            library=${config.tileLibrary}
-                            mode=${tilePicker.mode}
-                            draftTile=${pickerDraftTile}
-                            onPick=${pickTileFromLibrary}
-                            onCancel=${cancelTilePicker}
-                            onStartCreate=${startPickerCreate}
-                            onDraftChange=${setPickerDraftTile}
-                            onSaveDraft=${savePickerDraftTile}
-                          />
-                        `
-                      : null}
                     <${LayerPlacementFields}
                       layer=${liveBaseLayer || config.baseLayer}
                       tile=${findTile(
                         config.tileLibrary,
                         (liveBaseLayer || config.baseLayer).tileId,
                       )}
-                      onTileClick=${() => toggleTilePicker('base')}
                       onChange=${(layer) => setLiveBaseLayer(layer)}
                       onCommit=${(layer) => {
                         setLiveBaseLayer(null);
@@ -1144,35 +1293,17 @@ export function App() {
                         onBlur=${(e) => renameAreaLayer(selectedArea.id, e.target.value)}
                       />
                     </div>
-                    <button
-                      type="button"
-                      class="btn"
-                      onClick=${() => toggleTilePicker('change-area', selectedArea.id)}
-                    >
-                      Change tile type
-                    </button>
-                    ${tilePicker?.target === 'change-area' && tilePicker.areaId === selectedArea.id
-                      ? h`
-                          <${TilePickerPanel}
-                            title="Choose tile type"
-                            library=${config.tileLibrary}
-                            mode=${tilePicker.mode}
-                            draftTile=${pickerDraftTile}
-                            onPick=${pickTileFromLibrary}
-                            onCancel=${cancelTilePicker}
-                            onStartCreate=${startPickerCreate}
-                            onDraftChange=${setPickerDraftTile}
-                            onSaveDraft=${savePickerDraftTile}
-                          />
-                        `
-                      : null}
+                    <${AreaGeometryFields}
+                      bounds=${liveBounds || boundsFromPoints(selectedArea.points)}
+                      onChange=${(bounds) => applySelectedAreaBounds(bounds, false)}
+                      onCommit=${(bounds) => applySelectedAreaBounds(bounds, true)}
+                    />
                     <${LayerPlacementFields}
                       layer=${liveAreaLayer || selectedArea.layer}
                       tile=${findTile(
                         config.tileLibrary,
                         (liveAreaLayer || selectedArea.layer).tileId,
                       )}
-                      onTileClick=${() => toggleTilePicker('change-area', selectedArea.id)}
                       onChange=${(layer) => setLiveAreaLayer(layer)}
                       onCommit=${(layer) => {
                         setLiveAreaLayer(null);
@@ -1194,13 +1325,11 @@ export function App() {
             library=${config.tileLibrary}
             config=${config}
             preview=${preview}
-            editingTileId=${editingTileId}
+            selectedTileId=${editingTileId}
             liveTileDraft=${liveTileDraft}
             disabled=${is3d}
-            onSelectEdit=${(id) => {
-              setEditingTileId(id);
-              setLiveTileDraft(null);
-            }}
+            layerSelected=${baseSelected || !!selectedArea}
+            onSelectTile=${assignTileToCurrentLayer}
             onAddTile=${() => {
               const tile = defaultTileDefinition(`Tile ${config.tileLibrary.length + 1}`);
               setEditingTileId(tile.id);
@@ -1210,8 +1339,14 @@ export function App() {
             onDraftChange=${setLiveTileDraft}
             onCommitTile=${(tile) => {
               if (!config.tileLibrary.some((t) => t.id === tile.id)) {
-                commit({ ...config, tileLibrary: [...config.tileLibrary, tile] });
+                commit(
+                  configWithTileAssigned(
+                    { ...config, tileLibrary: [...config.tileLibrary, tile] },
+                    tile.id,
+                  ),
+                );
                 setLiveTileDraft(null);
+                setEditingTileId(tile.id);
                 return;
               }
               commitTileLibraryEdit(tile);

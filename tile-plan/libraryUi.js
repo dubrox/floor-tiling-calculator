@@ -173,7 +173,7 @@ export function TileDefinitionFields({ tile, onChange, onCommit, imageInputRef: 
   `;
 }
 
-export function LayerPlacementFields({ layer, tile, onChange, onCommit, onTileClick }) {
+export function LayerPlacementFields({ layer, tile, onChange, onCommit }) {
   const set = (key, value, commit = false) => {
     const next = { ...layer, [key]: value };
     onChange(next);
@@ -184,19 +184,13 @@ export function LayerPlacementFields({ layer, tile, onChange, onCommit, onTileCl
     <div class="layer-placement-fields">
       ${tile
         ? h`
-            <button
-              type="button"
-              class="layer-tile-ref layer-tile-picker"
-              title="Change tile type"
-              onClick=${onTileClick}
-            >
+            <div class="layer-tile-ref">
               <${TileSwatch} tile=${tile} />
               <div>
                 <strong>${tile.name}</strong>
                 <div class="hint">${formatTileSize(tile)} · gap ${tile.spacingCm} cm</div>
-                <div class="hint layer-tile-picker-hint">Click to change tile</div>
               </div>
-            </button>
+            </div>
           `
         : null}
       <div class="field">
@@ -247,61 +241,62 @@ export function LayerPlacementFields({ layer, tile, onChange, onCommit, onTileCl
   `;
 }
 
-function TilePickerCard({ tile, onPick }) {
-  return h`
-    <button type="button" class="tile-picker-card" onClick=${() => onPick(tile.id)}>
-      <${TileSwatch} tile=${tile} large=${true} />
-      <span class="tile-picker-name">${tile.name}</span>
-      <span class="tile-picker-meta">${formatTileSize(tile)}</span>
-      <span class="tile-picker-meta">Gap ${tile.spacingCm} cm</span>
-    </button>
-  `;
-}
+/** Bounds of an area layer (AABB position + size), for fine-tuning. */
+export function AreaGeometryFields({ bounds, onChange, onCommit }) {
+  const set = (key, raw, commit = false) => {
+    const value = Number(raw);
+    if (!Number.isFinite(value)) return;
+    const next = { ...bounds, [key]: value };
+    if (key === 'width') next.width = Math.max(0.1, value);
+    if (key === 'height') next.height = Math.max(0.1, value);
+    onChange(next);
+    if (commit) onCommit(next);
+  };
 
-export function TilePickerPanel({
-  title,
-  library,
-  mode,
-  draftTile,
-  onPick,
-  onCancel,
-  onStartCreate,
-  onDraftChange,
-  onSaveDraft,
-}) {
   return h`
-    <div class="tile-picker-panel">
-      <div class="panel-heading-row">
-        <h3>${mode === 'create' ? 'New tile type' : title}</h3>
-        <button type="button" class="btn btn-icon" title="Close" onClick=${onCancel}>×</button>
+    <div class="area-geometry-fields">
+      <div class="field">
+        <label>Position X (cm)</label>
+        <input
+          type="number"
+          step="0.1"
+          value=${bounds.x}
+          onInput=${(e) => set('x', e.target.value)}
+          onBlur=${(e) => set('x', e.target.value, true)}
+        />
       </div>
-
-      ${mode === 'create'
-        ? h`
-            <p class="hint">Define tile appearance and dimensions. Offset and rotation are set per layer.</p>
-            <${TileDefinitionFields}
-              tile=${draftTile}
-              onChange=${onDraftChange}
-              onCommit=${onDraftChange}
-            />
-            <div class="tile-picker-actions">
-              <button type="button" class="btn" onClick=${onCancel}>Cancel</button>
-              <button type="button" class="btn active" onClick=${onSaveDraft}>Save & use</button>
-            </div>
-          `
-        : h`
-            <p class="hint">Choose a tile from the library. Each layer keeps its own offset and orientation.</p>
-            <div class="tile-picker-grid">
-              ${library.map(
-                (tile) => h`
-                  <${TilePickerCard} key=${tile.id} tile=${tile} onPick=${onPick} />
-                `,
-              )}
-            </div>
-            <div class="tile-picker-actions">
-              <button type="button" class="btn" onClick=${onStartCreate}>Add new tile type</button>
-            </div>
-          `}
+      <div class="field">
+        <label>Position Y (cm)</label>
+        <input
+          type="number"
+          step="0.1"
+          value=${bounds.y}
+          onInput=${(e) => set('y', e.target.value)}
+          onBlur=${(e) => set('y', e.target.value, true)}
+        />
+      </div>
+      <div class="field">
+        <label>Width (cm)</label>
+        <input
+          type="number"
+          min="0.1"
+          step="0.1"
+          value=${bounds.width}
+          onInput=${(e) => set('width', e.target.value)}
+          onBlur=${(e) => set('width', e.target.value, true)}
+        />
+      </div>
+      <div class="field">
+        <label>Height (cm)</label>
+        <input
+          type="number"
+          min="0.1"
+          step="0.1"
+          value=${bounds.height}
+          onInput=${(e) => set('height', e.target.value)}
+          onBlur=${(e) => set('height', e.target.value, true)}
+        />
+      </div>
     </div>
   `;
 }
@@ -310,17 +305,18 @@ export function TileLibraryPanel({
   library,
   config,
   preview,
-  editingTileId,
+  selectedTileId,
   liveTileDraft,
   disabled,
-  onSelectEdit,
+  layerSelected,
+  onSelectTile,
   onAddTile,
   onDeleteTile,
   onDraftChange,
   onCommitTile,
 }) {
   const editingTile =
-    liveTileDraft || library.find((t) => t.id === editingTileId) || null;
+    liveTileDraft || library.find((t) => t.id === selectedTileId) || null;
 
   return h`
     <${CollapsiblePanel}
@@ -330,7 +326,11 @@ export function TileLibraryPanel({
         <button type="button" class="btn" disabled=${disabled} onClick=${onAddTile}>+ Add</button>
       `}
     >
-      <p class="hint">Shared tile definitions. Layers only store offset and orientation.</p>
+      <p class="hint">
+        ${layerSelected
+          ? 'Select a tile to assign it to the current layer.'
+          : 'Select a layer first, then pick a tile here.'}
+      </p>
       <ul class="tile-library-list">
         ${library.map((tile) => {
           const layerRefs = countTileUsage(config, tile.id);
@@ -339,9 +339,9 @@ export function TileLibraryPanel({
             <li key=${tile.id}>
               <button
                 type="button"
-                class=${`tile-library-item ${editingTileId === tile.id ? 'active' : ''}`}
+                class=${`tile-library-item ${selectedTileId === tile.id ? 'active' : ''}`}
                 disabled=${disabled}
-                onClick=${() => onSelectEdit(tile.id)}
+                onClick=${() => onSelectTile(tile.id)}
               >
                 <${TileSwatch} tile=${tile} />
                 <span class="tile-library-item-text">
@@ -357,7 +357,10 @@ export function TileLibraryPanel({
                 class="btn danger btn-icon"
                 title=${layerRefs ? 'In use — cannot delete' : 'Delete tile type'}
                 disabled=${disabled || layerRefs > 0}
-                onClick=${() => onDeleteTile(tile.id)}
+                onClick=${(e) => {
+                  e.stopPropagation();
+                  onDeleteTile(tile.id);
+                }}
               >×</button>
             </li>
           `;
