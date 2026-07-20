@@ -329,6 +329,16 @@ body {
   align-items: center;
 }
 
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.field-row .field {
+  min-width: 0;
+}
+
 .field label {
   color: var(--muted);
   font-size: 0.85rem;
@@ -360,6 +370,22 @@ body {
   gap: 0.35rem;
   flex-wrap: wrap;
   align-items: center;
+}
+
+.field .row.orientation-row {
+  flex-wrap: nowrap;
+}
+
+.field .orientation-row .btn {
+  flex: 0 0 auto;
+  padding: 0.35rem 0.45rem;
+}
+
+.field .orientation-row input[type="number"] {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+  grid-column: auto;
 }
 
 .image-row .tile-thumb {

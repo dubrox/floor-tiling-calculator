@@ -193,29 +193,31 @@ export function LayerPlacementFields({ layer, tile, onChange, onCommit }) {
             </div>
           `
         : null}
-      <div class="field">
-        <label>Offset X (cm)</label>
-        <input
-          type="number"
-          step="0.1"
-          value=${layer.offsetXCm}
-          onInput=${(e) => set('offsetXCm', Number(e.target.value))}
-          onBlur=${(e) => set('offsetXCm', Number(e.target.value), true)}
-        />
+      <div class="field-row">
+        <div class="field">
+          <label>Offset X</label>
+          <input
+            type="number"
+            step="0.1"
+            value=${layer.offsetXCm}
+            onInput=${(e) => set('offsetXCm', Number(e.target.value))}
+            onBlur=${(e) => set('offsetXCm', Number(e.target.value), true)}
+          />
+        </div>
+        <div class="field">
+          <label>Offset Y</label>
+          <input
+            type="number"
+            step="0.1"
+            value=${layer.offsetYCm}
+            onInput=${(e) => set('offsetYCm', Number(e.target.value))}
+            onBlur=${(e) => set('offsetYCm', Number(e.target.value), true)}
+          />
+        </div>
       </div>
-      <div class="field">
-        <label>Offset Y (cm)</label>
-        <input
-          type="number"
-          step="0.1"
-          value=${layer.offsetYCm}
-          onInput=${(e) => set('offsetYCm', Number(e.target.value))}
-          onBlur=${(e) => set('offsetYCm', Number(e.target.value), true)}
-        />
-      </div>
-      <div class="field">
+      <div class="field field-orientation">
         <label>Orientation (°)</label>
-        <div class="row">
+        <div class="row orientation-row">
           ${ORIENTATION_PRESETS.map(
             (deg) => h`
               <button
@@ -228,14 +230,14 @@ export function LayerPlacementFields({ layer, tile, onChange, onCommit }) {
               </button>
             `,
           )}
+          <input
+            type="number"
+            step="1"
+            value=${layer.orientationDeg}
+            onInput=${(e) => set('orientationDeg', Number(e.target.value))}
+            onBlur=${(e) => set('orientationDeg', Number(e.target.value), true)}
+          />
         </div>
-        <input
-          type="number"
-          step="1"
-          value=${layer.orientationDeg}
-          onInput=${(e) => set('orientationDeg', Number(e.target.value))}
-          onBlur=${(e) => set('orientationDeg', Number(e.target.value), true)}
-        />
       </div>
     </div>
   `;
@@ -255,47 +257,51 @@ export function AreaGeometryFields({ bounds, onChange, onCommit }) {
 
   return h`
     <div class="area-geometry-fields">
-      <div class="field">
-        <label>Position X (cm)</label>
-        <input
-          type="number"
-          step="0.1"
-          value=${bounds.x}
-          onInput=${(e) => set('x', e.target.value)}
-          onBlur=${(e) => set('x', e.target.value, true)}
-        />
+      <div class="field-row">
+        <div class="field">
+          <label>Pos X</label>
+          <input
+            type="number"
+            step="0.1"
+            value=${bounds.x}
+            onInput=${(e) => set('x', e.target.value)}
+            onBlur=${(e) => set('x', e.target.value, true)}
+          />
+        </div>
+        <div class="field">
+          <label>Pos Y</label>
+          <input
+            type="number"
+            step="0.1"
+            value=${bounds.y}
+            onInput=${(e) => set('y', e.target.value)}
+            onBlur=${(e) => set('y', e.target.value, true)}
+          />
+        </div>
       </div>
-      <div class="field">
-        <label>Position Y (cm)</label>
-        <input
-          type="number"
-          step="0.1"
-          value=${bounds.y}
-          onInput=${(e) => set('y', e.target.value)}
-          onBlur=${(e) => set('y', e.target.value, true)}
-        />
-      </div>
-      <div class="field">
-        <label>Width (cm)</label>
-        <input
-          type="number"
-          min="0.1"
-          step="0.1"
-          value=${bounds.width}
-          onInput=${(e) => set('width', e.target.value)}
-          onBlur=${(e) => set('width', e.target.value, true)}
-        />
-      </div>
-      <div class="field">
-        <label>Height (cm)</label>
-        <input
-          type="number"
-          min="0.1"
-          step="0.1"
-          value=${bounds.height}
-          onInput=${(e) => set('height', e.target.value)}
-          onBlur=${(e) => set('height', e.target.value, true)}
-        />
+      <div class="field-row">
+        <div class="field">
+          <label>Width</label>
+          <input
+            type="number"
+            min="0.1"
+            step="0.1"
+            value=${bounds.width}
+            onInput=${(e) => set('width', e.target.value)}
+            onBlur=${(e) => set('width', e.target.value, true)}
+          />
+        </div>
+        <div class="field">
+          <label>Height</label>
+          <input
+            type="number"
+            min="0.1"
+            step="0.1"
+            value=${bounds.height}
+            onInput=${(e) => set('height', e.target.value)}
+            onBlur=${(e) => set('height', e.target.value, true)}
+          />
+        </div>
       </div>
     </div>
   `;
